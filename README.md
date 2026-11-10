@@ -7,7 +7,10 @@ A live dashboard of stock markets around the world:
 - **Currency** for each country, against USD and INR.
 - **Policy rate, 10Y government bond yield and exchange market cap**, from a dated reference snapshot. The US 10Y yield is live.
 - A **global strip** with commodities (gold, silver, WTI, Brent, natural gas, copper), crypto (BTC, ETH, SOL, XRP), US Treasury yields and the dollar index.
-- Three views (**Countries**, **Heatmap** and a sortable **Table**), plus region filters, an "Open now" filter and search.
+- **Click any index, stock or commodity** to open a chart with 1D / 5D / 1M / 6M / 1Y / 5Y ranges, a hover crosshair, the day's range and the 52-week range.
+- **World map** coloured by each country's daily move, with pulsing dots on markets that are open now, plus a **24-hour timeline** of every exchange's trading hours in your own time zone.
+- **🇮🇳 India deep-dive**: Nifty 50, Sensex, Bank, Next 50, Midcap 150, Smallcap 250, India VIX and USD/INR; a heatmap of 14 Nifty sector indices; and a sortable table of 30 large Nifty stocks with market breadth.
+- Five views (**Countries**, **World map**, **Heatmap**, **Table**, **India**), plus region filters, an "Open now" filter and search. Views can be linked directly, e.g. `/#map` or `/#india`.
 - Auto-refresh every 60 seconds.
 
 ## How it works
@@ -15,7 +18,9 @@ A live dashboard of stock markets around the world:
 ```
 public/            static site (index.html, app.js, styles.css)
 public/data/markets.js   ← every country, index symbol, trading hours and reference figure
+public/data/india.js     ← India section: headline indices, sector indices, stock list
 api/quotes.js      serverless function: fetches quotes from Yahoo Finance and caches them for 60s
+api/chart.js       serverless function: price history for the chart window
 server.js          local dev server (serves the site + the same API)
 scripts/check-symbols.js   checks every ticker returns data
 ```
@@ -73,9 +78,24 @@ Copy any block in `MARKETS` inside `public/data/markets.js` and change the field
 
 `tz` takes an IANA time zone name. `sessions` takes local open and close times; markets with a lunch break get two pairs.
 
+The world map loads d3 and the country shapes (world-atlas, from Natural Earth) from cdn.jsdelivr.net. Natural Earth draws disputed borders, including Kashmir, using its own de-facto lines, which don't match India's official map. If that matters for where you share the site, swap in an official boundary file.
+
 ## Limitations
 
 - **Unofficial data source.** Yahoo Finance's chart endpoint is public but undocumented, and Yahoo can change or rate-limit it. It suits a personal or student project. For anything commercial, replace `fetchOne()` in `api/quotes.js` with a licensed provider such as Twelve Data, Financial Modeling Prep or Polygon; the rest of the site doesn't need to change.
 - Some exchanges are **delayed 15–20 minutes**.
 - Market open/closed status ignores **public holidays**.
 - This site is for information and education only and is not investment advice.
+
+## Features added November 2026
+
+- **Holidays:** `public/data/holidays.js` lists exchange holidays and early closes; market status, the timeline and the headline all use it. Add each new year when the exchange publishes it (NSE usually in December).
+- **Watchlist:** star any chart (or press S). Saved in the visitor's browser, shown at the top of the page, refreshed with every price update.
+- **Search anything:** the search box also asks Yahoo Finance (`/api/search`), so any listed stock, fund, index, currency or crypto can be opened, starred and shared.
+- **Charts:** volume bars and 50- and 200-day moving averages (`/api/chart` fetches extra history so the averages start at the left edge), plus "Compare with…" for two lines rebased to the same start.
+- **Shareable links:** the address always describes what's on screen, e.g. `#india&chart=TCS.NS&range=1y&vs=^NSEI`.
+- **Calendar tab:** central bank decisions and CPI releases from `public/data/calendar.js`, company results dates live from Yahoo, and exchange holidays.
+- **Source warnings:** the status line says when a meaningful share of prices failed to update.
+- **Installable:** `manifest.webmanifest` and `icon.svg` let phones add the site to the home screen.
+
+A monthly scheduled check (run by Claude on the 1st of each month) reports which hand-entered figures need updating: policy rates, yields, IMF data, holidays and calendar dates.
