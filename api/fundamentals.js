@@ -47,19 +47,24 @@ async function yget(url) {
 const num = (v) => (v == null ? null : typeof v === "object" ? (v.raw != null ? v.raw : null) : isFinite(v) ? +v : null);
 // Yahoo quotes some shares in minor units (London in pence); name the main currency.
 const realCur = (cur) => ({ GBp: "GBP", GBX: "GBP", ZAc: "ZAR", ILA: "ILS" }[cur] || cur);
+const minor = (cur) => ["GBp", "GBX", "ZAc", "ILA"].includes(cur); // price is in pence/cents
 
 async function batch(symbols) {
   const fields = [
     "marketCap", "trailingPE", "forwardPE", "priceToBook", "trailingAnnualDividendYield", "dividendYield",
-    "epsTrailingTwelveMonths", "currency", "fiftyTwoWeekHigh", "fiftyTwoWeekLow", "shortName",
+    "epsTrailingTwelveMonths", "currency", "sharesOutstanding", "regularMarketPrice", "shortName",
   ].join(",");
   const j = await yget("https://query2.finance.yahoo.com/v7/finance/quote?symbols=" + encodeURIComponent(symbols.join(",")) + "&fields=" + fields);
   const out = {};
   for (const q of (j.quoteResponse && j.quoteResponse.result) || []) {
-    const dy = num(q.trailingAnnualDividendYield) != null ? num(q.trailingAnnualDividendYield) * 100 : num(q.dividendYield);
+    // dividendYield is already a percent; the trailing figure mixes units for pence-quoted shares
+    const dy = num(q.dividendYield) != null ? num(q.dividendYield) : minor(q.currency) ? null : num(q.trailingAnnualDividendYield) != null ? num(q.trailingAnnualDividendYield) * 100 : null;
+    // Yahoo leaves market cap blank for some exchanges (NSE among them); rebuild it from shares x price
+    let mc = num(q.marketCap);
+    if (!mc && num(q.sharesOutstanding) && num(q.regularMarketPrice)) mc = num(q.sharesOutstanding) * num(q.regularMarketPrice) * (minor(q.currency) ? 0.01 : 1);
     out[q.symbol] = {
       currency: realCur(q.currency),
-      marketCap: num(q.marketCap),
+      marketCap: mc,
       pe: num(q.trailingPE),
       fpe: num(q.forwardPE),
       pb: num(q.priceToBook),
@@ -79,6 +84,9 @@ async function detail(symbol) {
   const money = fd.financialCurrency || realCur(p.currency);
   const pctOf = (v) => (num(v) == null ? null : num(v) * 100);
   const desc = ap.longBusinessSummary || "";
+  const k = minor(p.currency) ? 0.01 : 1; // ratios built on a pence price need scaling back
+  let mc = num(p.marketCap);
+  if (!mc && num(ks.sharesOutstanding) && num(p.regularMarketPrice)) mc = num(ks.sharesOutstanding) * num(p.regularMarketPrice) * k;
   return {
     symbol,
     name: p.longName || p.shortName || symbol,
@@ -90,10 +98,10 @@ async function detail(symbol) {
     country: ap.country || null,
     website: ap.website || null,
     about: desc.length > 420 ? desc.slice(0, desc.lastIndexOf(" ", 400)) + "…" : desc,
-    marketCap: num(p.marketCap),
+    marketCap: mc,
     pe: num(sd.trailingPE),
     fpe: num(sd.forwardPE) != null ? num(sd.forwardPE) : num(ks.forwardPE),
-    pb: num(ks.priceToBook),
+    pb: num(ks.priceToBook) != null ? num(ks.priceToBook) * k : null,
     ps: num(sd.priceToSalesTrailing12Months),
     evEbitda: num(ks.enterpriseToEbitda),
     eps: num(ks.trailingEps),
