@@ -76,10 +76,19 @@ async function fillCaps(out) {
   return out;
 }
 
+// the next results date: Yahoo gives a window (start/end) while it's an estimate, then the confirmed day
+function nextResults(q) {
+  const now = Date.now() / 1000;
+  const cands = [num(q.earningsTimestampStart), num(q.earningsTimestamp), num(q.earningsTimestampEnd)].filter((t) => t && t > now - 86400);
+  if (!cands.length) return {};
+  return { results: Math.min(...cands), resultsEstimate: !!q.isEarningsDateEstimate || (num(q.earningsTimestampStart) && num(q.earningsTimestampEnd) && num(q.earningsTimestampStart) !== num(q.earningsTimestampEnd)) };
+}
+
 async function batch(symbols) {
   const fields = [
     "marketCap", "trailingPE", "forwardPE", "priceToBook", "trailingAnnualDividendYield", "dividendYield",
     "epsTrailingTwelveMonths", "currency", "sharesOutstanding", "regularMarketPrice", "shortName",
+    "earningsTimestamp", "earningsTimestampStart", "earningsTimestampEnd", "isEarningsDateEstimate",
   ].join(",");
   const j = await yget("https://query2.finance.yahoo.com/v7/finance/quote?symbols=" + encodeURIComponent(symbols.join(",")) + "&fields=" + fields);
   const out = {};
@@ -97,17 +106,20 @@ async function batch(symbols) {
       pb: num(q.priceToBook),
       divYield: dy,
       eps: num(q.epsTrailingTwelveMonths),
+      ...nextResults(q),
     };
   }
   return fillCaps(out);
 }
 
 async function detail(symbol) {
-  const mods = "price,summaryDetail,defaultKeyStatistics,financialData,assetProfile";
+  const mods = "price,summaryDetail,defaultKeyStatistics,financialData,assetProfile,calendarEvents";
   const j = await yget("https://query2.finance.yahoo.com/v10/finance/quoteSummary/" + encodeURIComponent(symbol) + "?modules=" + mods);
   const r = j.quoteSummary && j.quoteSummary.result && j.quoteSummary.result[0];
   if (!r) throw new Error("No fundamentals for " + symbol);
   const p = r.price || {}, sd = r.summaryDetail || {}, ks = r.defaultKeyStatistics || {}, fd = r.financialData || {}, ap = r.assetProfile || {};
+  const ce = (r.calendarEvents && r.calendarEvents.earnings) || {};
+  const ed = (ce.earningsDate || []).map(num).filter(Boolean);
   const money = fd.financialCurrency || realCur(p.currency);
   const pctOf = (v) => (num(v) == null ? null : num(v) * 100);
   const desc = ap.longBusinessSummary || "";
@@ -151,6 +163,8 @@ async function detail(symbol) {
     rating: fd.recommendationKey && fd.recommendationKey !== "none" ? fd.recommendationKey : null,
     analysts: num(fd.numberOfAnalystOpinions),
     target: num(fd.targetMeanPrice), // same units as the quoted price
+    results: ed.length ? Math.min(...ed) : null,
+    resultsEstimate: ed.length > 1 || !!ce.isEarningsDateEstimate,
   };
 }
 
@@ -163,6 +177,7 @@ function mockOne(symbol, full) {
   const o = {
     currency: cur, marketCap: (20 + r() * 3000) * 1e9 * (cur === "INR" ? 83 : cur === "JPY" ? 150 : 1),
     pe: 8 + r() * 50, fpe: 7 + r() * 40, pb: 0.8 + r() * 12, divYield: r() * 4, eps: 2 + r() * 80,
+    results: Math.floor(Date.now() / 1000) + Math.floor(r() * 80) * 86400, resultsEstimate: r() > 0.5,
   };
   if (!full) return o;
   return Object.assign(o, {
