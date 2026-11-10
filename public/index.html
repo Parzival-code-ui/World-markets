@@ -36,8 +36,10 @@
     <label class="toggle"><input type="checkbox" id="open-only" /> Open now</label>
     <div class="seg" id="views">
       <button data-view="cards" class="on">Countries</button>
+      <button data-view="map">World map</button>
       <button data-view="heat">Heatmap</button>
       <button data-view="table">Table</button>
+      <button data-view="india">🇮🇳 India</button>
     </div>
   </div>
 </nav>
@@ -50,7 +52,26 @@
   <p class="muted">For information and education only. This is not investment advice.</p>
 </footer>
 
+<div id="modal" class="modal" hidden>
+  <div class="mbox" role="dialog" aria-modal="true">
+    <div class="mtop">
+      <div id="m-title"></div>
+      <button id="m-close" class="btn" aria-label="Close">✕</button>
+    </div>
+    <div class="mrow">
+      <div id="m-price"></div>
+      <div class="seg" id="m-ranges"></div>
+    </div>
+    <div id="m-chart" class="mchart"></div>
+    <div id="m-stats" class="mstats"></div>
+    <div class="mfoot"><a id="m-yahoo" target="_blank" rel="noopener">Open on Yahoo Finance ↗</a><span class="muted small">Esc to close</span></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
 <script src="data/markets.js"></script>
+<script src="data/india.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
