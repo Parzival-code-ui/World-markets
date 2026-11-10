@@ -41,7 +41,7 @@ window.MARKETS = [
     policy: [29.00, "31 Jan 2025"], wgb: "argentina" },
   { id: "cl", name: "Chile", flag: "🇨🇱", region: "Americas", ccy: "CLP",
     exchange: "Santiago SE", tz: "America/Santiago", days: WD, sessions: [["09:30", "16:00"]],
-    indices: [["^IPSA", "S&P IPSA"]],
+    indices: [["SPIPSA.SN", "S&P IPSA"]],
     policy: [4.50, "16 Dec 2025"], y10: [6.01, "Sep 2026"], wgb: "chile" },
 
   // ── Europe ────────────────────────────────────────────────────────────────
