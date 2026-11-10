@@ -6,6 +6,9 @@
 <title>World Markets — what's trading right now</title>
 <meta name="description" content="Live view of stock markets around the world: major indices, currencies, rates, commodities and crypto, with India in depth." />
 <meta name="theme-color" content="#0f1726" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="icon.svg" type="image/svg+xml" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
 <script>
   // apply the saved theme before first paint so there's no flash of the wrong colours
   try {
@@ -48,6 +51,7 @@
     <p id="subline" class="subline"></p>
   </div>
   <div id="ribbon" class="ribbon" aria-label="Today's trading hours in your time"></div>
+  <section id="watch" class="watch" hidden aria-label="Your watchlist"></section>
   <div id="highlights" class="highlights"></div>
 </section>
 
@@ -62,6 +66,7 @@
     <button data-view="heat" role="tab">Heatmap</button>
     <button data-view="table" role="tab">Table</button>
     <button data-view="stocks" role="tab">Stocks</button>
+    <button data-view="cal" role="tab">Calendar</button>
     <button data-view="india" role="tab">🇮🇳 India</button>
     <span class="tab-ink" id="tab-ink"></span>
   </div>
@@ -76,7 +81,7 @@
 <main id="main"></main>
 
 <footer class="foot">
-  <p>Prices, currencies, commodities, crypto and US Treasury yields come from Yahoo Finance and refresh every minute. Some exchanges are delayed by 15–20 minutes. Trading hours are regular sessions and don't account for public holidays.</p>
+  <p>Prices, currencies, commodities, crypto and US Treasury yields come from Yahoo Finance and refresh every minute. Some exchanges are delayed by 15–20 minutes. Trading hours include exchange holidays and early closes for the major markets.</p>
   <p>Company valuations and financials come from Yahoo Finance and refresh hourly. Policy rates, 10-year yields outside the US, market sizes and economy figures are updated by hand: <span id="ref-sources"></span>.</p>
   <p>For information and learning only, not investment advice.</p>
 </footer>
@@ -86,6 +91,7 @@
     <div class="grab" aria-hidden="true"></div>
     <div class="mtop">
       <div id="m-title"></div>
+      <button id="m-star" class="iconbtn star" aria-pressed="false" aria-label="Add to watchlist" title="Add to watchlist (S)"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m10 2.6 2.3 4.7 5.1.7-3.7 3.6.9 5.1L10 14.3l-4.6 2.4.9-5.1-3.7-3.6 5.1-.7Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></button>
       <button id="m-close" class="iconbtn" aria-label="Close chart"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
     </div>
     <div class="mrow">
@@ -93,9 +99,10 @@
       <div class="seg" id="m-ranges" role="tablist" aria-label="Chart range"></div>
     </div>
     <div id="m-chart" class="mchart"></div>
+    <div id="m-tools" class="mtools"></div>
     <div id="m-stats" class="mstats"></div>
     <div id="m-fund" class="mfund"></div>
-    <div class="mfoot"><a id="m-yahoo" target="_blank" rel="noopener">Open on Yahoo Finance</a><span class="muted">Press Esc to close</span></div>
+    <div class="mfoot"><span class="mlinks"><button id="m-share" class="linkbtn">Copy link to this chart</button><a id="m-yahoo" target="_blank" rel="noopener">Open on Yahoo Finance</a></span><span class="muted">S to star, ← → to change range, Esc to close</span></div>
   </div>
 </div>
 
@@ -105,6 +112,8 @@
 <script src="data/india.js"></script>
 <script src="data/stocks.js"></script>
 <script src="data/macro.js"></script>
+<script src="data/holidays.js"></script>
+<script src="data/calendar.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
