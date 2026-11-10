@@ -8,7 +8,7 @@
   // accounts (auth.js): most of the site needs a signed-in visitor; the homepage stays open as a preview
   const AU = window.WMAuth || { user: null, known: true, ready: Promise.resolve(null), onChange() {}, token: async () => null, load: async () => null, save: async () => {} };
   const authed = () => !!AU.user;
-  const LOCKED = ["map", "heat", "table", "stocks", "cal", "india"];
+  const LOCKED = ["mine", "map", "heat", "table", "stocks", "cal", "india"];
   async function authFetch(url) {
     const t = await AU.token().catch(() => null);
     const r = await fetch(url, t ? { headers: { Authorization: "Bearer " + t } } : {});
@@ -46,7 +46,7 @@
   symbols.add("DKK=X"); // so European market caps can be compared in dollars
   const MAC = window.MACRO || {};
   // the visitor's watchlist: [{ s: symbol, n: name, sub }], kept in this browser
-  const watch = (store.get("wm-watch") || []).filter((w) => w && w.s).slice(0, 30);
+  const watch = (store.get("wm-watch") || []).filter((w) => w && w.s).slice(0, 60);
   watch.forEach((w) => { NAMES[w.s] = NAMES[w.s] || { name: w.n || w.s, sub: w.sub || "" }; if (w.stock) STOCK_SET.add(w.s); });
 
   // ── helpers ──────────────────────────────────────────────────────────────
@@ -380,21 +380,21 @@
     if (!el) return;
     el.hidden = !watch.length || !authed();
     if (el.hidden) { el.innerHTML = ""; return; }
-    el.innerHTML = `<div class="watch-h"><h2>Your watchlist</h2><p class="muted">Tap the star on any chart to add or remove.</p></div>
+    el.innerHTML = `<div class="watch-h"><h2>My markets</h2><button class="linkbtn" data-goview="mine">Add or remove</button></div>
       <div class="watch-row">${watch.map((w) => `<a class="wcard" href="${yurl(w.s)}" data-sym="${esc(w.s)}">
         <span class="wc-n">${esc(w.n || w.s)}</span><span class="wc-s">${esc(tickerOf(w.s))}</span>
         <span class="wc-row"><span class="wc-p">${px(w.s)}</span>${chipS(w.s)}</span>${sparkS(w.s, 150, 28)}</a>`).join("")}</div>`;
   }
   const isWatched = (s) => watch.some((w) => w.s === s);
-  function toggleWatch(s) {
+  function toggleWatch(s, quiet) {
     if (!authed()) return openAuth("watch");
     const i = watch.findIndex((w) => w.s === s);
-    if (i >= 0) { watch.splice(i, 1); toast(`Removed ${NAMES[s] ? NAMES[s].name : s} from your watchlist`); }
+    if (i >= 0) { watch.splice(i, 1); if (!quiet) toast(`Removed ${NAMES[s] ? NAMES[s].name : s} from My markets`); }
     else {
-      if (watch.length >= 30) return toast("Your watchlist is full at 30. Remove one first.");
+      if (watch.length >= 60) return toast("My markets is full at 60. Remove one first.");
       const nm = NAMES[s] || { name: s, sub: "" };
       watch.push({ s, n: nm.name, sub: nm.sub, stock: STOCK_SET.has(s) || undefined });
-      toast(`Added ${nm.name} to your watchlist`);
+      toast(`Added ${nm.name} to My markets`);
       if (!state.quotes[s]) quoteFor([s]).then(renderWatch);
     }
     store.set("wm-watch", watch);
@@ -707,8 +707,9 @@
   // ── main ─────────────────────────────────────────────────────────────────
   function renderMain() {
     const main = $("#main");
-    $("#filters").hidden = ["map", "india", "stocks", "cal"].includes(state.view);
+    $("#filters").hidden = ["map", "india", "stocks", "cal", "mine"].includes(state.view);
     if (LOCKED.includes(state.view) && !authed()) return renderLocked(main);
+    if (state.view === "mine") return renderMine(main);
     if (state.view === "india") return renderIndia(main);
     if (state.view === "stocks") return renderStocks(main);
     if (state.view === "cal") return renderCal(main);
@@ -1234,7 +1235,7 @@
       remoteCache[q] = "loading";
       authFetch("/api/search?q=" + encodeURIComponent(q)).then((r) => r.json()).then((j) => { remoteCache[q] = j.results || []; })
         .catch(() => { remoteCache[q] = []; })
-        .finally(() => { if (sbox.value.trim().toLowerCase() === q && document.activeElement === sbox) drawPop(); });
+        .finally(() => { if (sbox.value.trim().toLowerCase() === q && document.activeElement === sbox) drawPop(); remoteDone(); });
     }, 220);
     return "loading";
   }
@@ -1350,6 +1351,141 @@
     if (e.key === "/" && document.activeElement.tagName !== "INPUT") { e.preventDefault(); $("#search").focus(); }
   });
 
+  // ── my markets: the visitor's own picks, chosen from everything the site knows ──
+  const EXTRA = {
+    com: [["PL=F", "Platinum", "$/oz"], ["PA=F", "Palladium", "$/oz"], ["ALI=F", "Aluminium", "$/t"], ["HO=F", "Heating Oil", "$/gal"], ["RB=F", "Gasoline (RBOB)", "$/gal"],
+      ["ZW=F", "Wheat", "¢/bu"], ["ZC=F", "Corn", "¢/bu"], ["ZS=F", "Soybeans", "¢/bu"], ["KC=F", "Coffee", "¢/lb"], ["SB=F", "Sugar", "¢/lb"], ["CT=F", "Cotton", "¢/lb"], ["CC=F", "Cocoa", "$/t"]],
+    cry: [["BNB-USD", "BNB", "USD"], ["DOGE-USD", "Dogecoin", "USD"], ["ADA-USD", "Cardano", "USD"], ["TRX-USD", "Tron", "USD"]],
+    fx: [["EURUSD=X", "Euro in dollars", "EUR / USD"], ["GBPUSD=X", "Pound in dollars", "GBP / USD"], ["EURINR=X", "Euro in rupees", "EUR / INR"], ["GBPINR=X", "Pound in rupees", "GBP / INR"]],
+  };
+  const KINDS = [["idx", "Indices"], ["stk", "Stocks"], ["com", "Commodities"], ["fx", "Currencies"], ["cry", "Crypto"], ["rate", "Rates"], ["oth", "Other"]];
+  const KIND_OF_GROUP = { Commodities: "com", Crypto: "cry", "US Rates & Dollar": "rate" };
+  const CAT = []; // { s, n, sub, k, tag }
+  const CAT_BY = {};
+  const catAdd = (s, n, sub, k, tag) => { if (CAT_BY[s]) return; const it = { s, n, sub, k, tag }; CAT.push(it); CAT_BY[s] = it; NAMES[s] = NAMES[s] || { name: n, sub }; };
+  M.forEach((c) => c.indices.forEach(([s, n]) => catAdd(s, n, `${c.flag} ${c.name}`, "idx", c.region)));
+  IN.sectors.forEach(([s, n]) => catAdd(s, "Nifty " + n, "🇮🇳 India sector", "idx", "India sectors"));
+  G.forEach((g) => g.items.forEach(([s, n, u]) => catAdd(s, n, u ? "in " + u : g.group, s === "DX-Y.NYB" ? "fx" : KIND_OF_GROUP[g.group], null)));
+  EXTRA.com.forEach(([s, n, u]) => catAdd(s, n, "in " + u, "com", null));
+  EXTRA.cry.forEach(([s, n, u]) => catAdd(s, n, "in " + u, "cry", null));
+  M.forEach((c) => { const f = fx(c.ccy); if (f) catAdd(f, `${CCY_NAME[c.ccy] || c.ccy}`, `${c.flag} ${c.ccy} per US dollar`, "fx", null); });
+  EXTRA.fx.forEach(([s, n, u]) => catAdd(s, n, u, "fx", null));
+  SM.forEach((m) => m.stocks.forEach(([s, n, sec]) => catAdd(s, n, `${m.flag} ${sec}`, "stk", m.id)));
+  const kindOf = (w) => w.k || (CAT_BY[w.s] && CAT_BY[w.s].k) || (w.stock || STOCK_SET.has(w.s) ? "stk" : "oth");
+  const MINE_MAX = 60;
+
+  const pick = { open: false, k: "com", q: "", mkt: SM[0].id };
+  function renderMine(el) {
+    const groups = KINDS.map(([k, label]) => [k, label, watch.filter((w) => kindOf(w) === k)]).filter((g) => g[2].length);
+    if (!watch.length) pick.open = true; // nothing picked yet: start with the picker
+    const showPick = pick.open;
+    el.innerHTML = `<div class="mine">
+      <div class="mine-h"><div><h2>My markets</h2><p class="muted">${watch.length ? `${watch.length} of ${MINE_MAX} picked. They also appear at the top of the homepage.` : "Pick the prices you check most: an index, a share, crude oil, gold, a currency or a coin."}</p></div>
+        ${watch.length ? `<button class="btn ${showPick ? "" : "primary"}" id="mine-add" aria-expanded="${showPick}">${showPick ? "Done adding" : "Add markets"}</button>` : ""}</div>
+      ${showPick ? pickerHTML() : ""}
+      ${groups.map(([k, label, list]) => `<section class="mine-g"><h3>${label}</h3><div class="mine-grid">${list.map((w) => `
+        <div class="mcard"><a href="${yurl(w.s)}" data-sym="${esc(w.s)}">
+          <span class="wc-n">${esc(w.n || w.s)}</span><span class="wc-s">${esc((CAT_BY[w.s] && CAT_BY[w.s].sub) || w.sub || tickerOf(w.s))}</span>
+          <span class="wc-row"><span class="wc-p">${px(w.s)}</span>${chipS(w.s)}</span>${sparkS(w.s, 220, 34)}</a>
+          <button class="mc-x" data-unpick="${esc(w.s)}" aria-label="Remove ${esc(w.n || w.s)}" title="Remove"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 6 8 8M14 6l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        </div>`).join("")}</div></section>`).join("")}
+    </div>`;
+    if (showPick) drawPickList();
+  }
+  function pickerHTML() {
+    return `<div class="picker" id="picker">
+      <label class="pk-search"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m13 13 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <input id="pk-q" type="search" placeholder="Search, e.g. crude, gold, Infosys, Tesla, yen" value="${esc(pick.q)}" autocomplete="off" aria-label="Search markets to add" /></label>
+      <div class="pk-kinds" role="tablist" aria-label="Kind">${KINDS.filter(([k]) => k !== "oth").map(([k, l]) => `<button class="chip ${!pick.q && pick.k === k ? "on" : ""}" data-pk="${k}" role="tab" aria-selected="${!pick.q && pick.k === k}">${l}</button>`).join("")}</div>
+      <div id="pk-list" class="pk-list" role="list"></div>
+    </div>`;
+  }
+  function pickItems() {
+    const q = pick.q.trim().toLowerCase();
+    if (q) {
+      const words = q.split(/\s+/);
+      const local = CAT.filter((it) => { const h = (it.n + " " + it.sub + " " + it.s).toLowerCase(); return words.every((w) => h.includes(w)); }).slice(0, 30);
+      const rem = remoteFor(q);
+      const seen = new Set(local.map((it) => it.s));
+      const extra = Array.isArray(rem) ? rem.filter((r) => !seen.has(r.symbol)).slice(0, 8).map((r) => ({ s: r.symbol, n: r.name, sub: [r.type, r.exchange].filter(Boolean).join(", "), k: { EQUITY: "stk", INDEX: "idx", CURRENCY: "fx", CRYPTOCURRENCY: "cry", FUTURE: "com" }[r.kind] || "oth", remote: true })) : [];
+      return { rows: [...local, ...extra], note: rem === "loading" ? "Searching every market…" : !local.length && !extra.length ? `Nothing matches “${esc(pick.q)}”.` : "" };
+    }
+    if (pick.k === "stk") return { rows: CAT.filter((it) => it.k === "stk" && it.tag === pick.mkt), stocks: true };
+    if (pick.k === "idx") return { rows: CAT.filter((it) => it.k === "idx"), grouped: true };
+    return { rows: CAT.filter((it) => it.k === pick.k) };
+  }
+  function drawPickList() {
+    const box = $("#pk-list");
+    if (!box) return;
+    const { rows, note, stocks, grouped } = pickItems();
+    const missing = rows.map((r) => r.s).filter((s) => !state.quotes[s] && !pickBusy.has(s)).slice(0, 60);
+    if (missing.length) { missing.forEach((s) => pickBusy.add(s)); quoteFor(missing).then(() => { missing.forEach((s) => pickBusy.delete(s)); patchPickPrices(); }); }
+    let last = null;
+    const row = (it) => {
+      const on = isWatched(it.s), q = Qv(it.s);
+      let head = "";
+      if (grouped && it.tag !== last) { last = it.tag; head = `<p class="pk-sec">${esc(it.tag)}</p>`; }
+      return head + `<button class="pk-item ${on ? "on" : ""}" data-pick="${esc(it.s)}" aria-pressed="${on}" role="listitem">
+        <span class="pk-t"><b>${esc(it.n)}</b><small>${esc(it.sub)}</small></span>
+        <span class="pk-r" data-pkp="${esc(it.s)}">${q.price != null ? `${fmt(q.price)} ${chip(q.changePct)}` : ""}</span>
+        <span class="pk-b" aria-hidden="true">${on ? "✓" : "+"}</span></button>`;
+    };
+    box.innerHTML = (stocks ? `<div class="pk-mkts">${SM.map((m) => `<button class="chip ${m.id === pick.mkt ? "on" : ""}" data-pkm="${m.id}">${m.flag} ${esc(m.name)}</button>`).join("")}</div>` : "")
+      + rows.map(row).join("") + (note ? `<p class="pk-note">${note}</p>` : "");
+  }
+  const pickBusy = new Set();
+  function patchPickPrices() {
+    document.querySelectorAll("[data-pkp]").forEach((el) => { const q = Qv(el.dataset.pkp); if (q.price != null) el.innerHTML = `${fmt(q.price)} ${chip(q.changePct)}`; });
+  }
+  function addPick(it) {
+    if (isWatched(it.s)) { toggleWatch(it.s, true); return; }
+    if (watch.length >= MINE_MAX) return toast(`You can pick up to ${MINE_MAX}. Remove one first.`);
+    NAMES[it.s] = NAMES[it.s] || { name: it.n, sub: it.sub };
+    if (it.k === "stk") STOCK_SET.add(it.s);
+    watch.push({ s: it.s, n: it.n, sub: it.sub, k: it.k, stock: it.k === "stk" || undefined });
+    store.set("wm-watch", watch); syncSave(); renderWatch();
+    if (!state.quotes[it.s]) quoteFor([it.s]).then(() => { renderWatch(); if (state.view === "mine") patch(); });
+  }
+  document.addEventListener("click", (e) => {
+    if (state.view !== "mine") return;
+    const main = $("#main");
+    if (!main.contains(e.target)) return;
+    if (e.target.closest("#mine-add")) { pick.open = !pick.open; return renderMain(); }
+    const u = e.target.closest("[data-unpick]");
+    if (u) { e.preventDefault(); toggleWatch(u.dataset.unpick, true); return renderMain(); }
+    const k = e.target.closest("[data-pk]");
+    if (k) { pick.k = k.dataset.pk; pick.q = ""; return renderMain(); }
+    const m = e.target.closest("[data-pkm]");
+    if (m) { pick.mkt = m.dataset.pkm; return drawPickList(); }
+    const p = e.target.closest("[data-pick]");
+    if (p) {
+      const it = CAT_BY[p.dataset.pick] || pickItems().rows.find((r) => r.s === p.dataset.pick);
+      if (!it) return;
+      const y = window.scrollY, listTop = $("#pk-list").scrollTop;
+      addPick(it);
+      renderMine(main); // keep the picker where it was
+      $("#pk-list").scrollTop = listTop; window.scrollTo(0, y);
+      const again = document.querySelector(`[data-pick="${CSS.escape(it.s)}"]`); if (again) again.focus({ preventScroll: true });
+    }
+  });
+  let pkT;
+  document.addEventListener("input", (e) => {
+    if (e.target.id !== "pk-q") return;
+    pick.q = e.target.value;
+    document.querySelectorAll("[data-pk]").forEach((b) => { const on = !pick.q && b.dataset.pk === pick.k; b.classList.toggle("on", on); b.setAttribute("aria-selected", on); });
+    clearTimeout(pkT); pkT = setTimeout(drawPickList, 120);
+  });
+  // Yahoo search answers arrive later; redraw the list when they do
+  const remoteDone = () => { if (state.view === "mine" && pick.q && $("#pk-list")) drawPickList(); };
+
+  document.addEventListener("click", (e) => {
+    const g = e.target.closest("[data-goview]");
+    if (!g) return;
+    e.preventDefault(); setView(g.dataset.goview);
+    const t = document.querySelector(".tabs-wrap");
+    if (t) window.scrollTo({ top: t.getBoundingClientRect().top + window.scrollY - 8, behavior: REDUCED ? "auto" : "smooth" });
+  });
+
   // ── accounts ─────────────────────────────────────────────────────────────
   let pendingChart = null, authMode = "in", authWhy = null;
   const WHY = {
@@ -1359,6 +1495,7 @@
     search: () => "Sign in to search every listed company.",
   };
   const LOCK_COPY = {
+    mine: ["My markets", "Your own list of prices to follow: indices, shares, crude oil, gold, currencies, crypto and bond yields."],
     map: ["World map", "Every market on one map, with a 24-hour timeline of trading sessions."],
     heat: ["Heatmap", "Every index, shaded by today's move, grouped by region."],
     table: ["Table", "All markets in one sortable table: price, day, month and year changes."],
@@ -1513,21 +1650,22 @@
   }
 
   // watchlist and settings live in the account, so they follow the visitor to other devices
-  let saveT, syncing = false;
+  let saveT, syncing = false, dirty = false;
+  const flush = () => { clearTimeout(saveT); if (!dirty || !authed()) return; dirty = false; AU.save({ watch, theme: store.get("wm-theme") || "auto", cb: !!store.get("wm-cb"), copts }).catch((e) => { dirty = true; console.warn("save failed", e); }); };
   function syncSave() {
     if (!authed() || syncing) return;
-    clearTimeout(saveT);
-    saveT = setTimeout(() => AU.save({ watch, theme: store.get("wm-theme") || "auto", cb: !!store.get("wm-cb"), copts }).catch((e) => console.warn("save failed", e)), 800);
+    dirty = true; clearTimeout(saveT); saveT = setTimeout(flush, 400);
   }
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flush(); });
+  window.addEventListener("pagehide", flush);
   async function pullSettings() {
     let d = null;
     try { d = await AU.load(); } catch (e) { console.warn("load failed", e); }
     syncing = true;
     if (d) {
       if (Array.isArray(d.watch)) {
-        const seen = new Set(d.watch.map((w) => w.s));
-        const merged = [...d.watch, ...watch.filter((w) => !seen.has(w.s))].filter((w) => w && w.s).slice(0, 30);
-        watch.splice(0, watch.length, ...merged);
+        // the account's copy wins: picks can only be changed while signed in, so it is always the latest
+        watch.splice(0, watch.length, ...d.watch.filter((w) => w && w.s).slice(0, 60));
         watch.forEach((w) => { NAMES[w.s] = NAMES[w.s] || { name: w.n || w.s, sub: w.sub || "" }; if (w.stock) STOCK_SET.add(w.s); });
         store.set("wm-watch", watch);
       }
@@ -1537,7 +1675,7 @@
       applyTheme();
     }
     syncing = false;
-    if (!d || watch.length !== (d.watch || []).length) syncSave(); // first sign-in, or local stars to add
+    if (!d) syncSave(); // first sign-in: create the account's settings
     const missing = watch.map((w) => w.s).filter((s) => !state.quotes[s]);
     if (missing.length) quoteFor(missing).then(renderWatch);
     render();
@@ -1610,7 +1748,7 @@
     const hp = location.hash.slice(1).split("&").filter(Boolean);
     const view = hp[0] && !hp[0].includes("=") ? hp[0] : "cards";
     const q = Object.fromEntries(hp.filter((x) => x.includes("=")).map((x) => { const i = x.indexOf("="); return [x.slice(0, i), decodeURIComponent(x.slice(i + 1))]; }));
-    return { view: ["map", "heat", "table", "stocks", "cal", "india"].includes(view) ? view : "cards", ...q };
+    return { view: ["mine", "map", "heat", "table", "stocks", "cal", "india"].includes(view) ? view : "cards", ...q };
   }
   function applyHash(first) {
     const h = readHash();
