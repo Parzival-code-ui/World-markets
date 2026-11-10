@@ -49,6 +49,33 @@ const num = (v) => (v == null ? null : typeof v === "object" ? (v.raw != null ? 
 const realCur = (cur) => ({ GBp: "GBP", GBX: "GBP", ZAc: "ZAR", ILA: "ILS" }[cur] || cur);
 const minor = (cur) => ["GBp", "GBX", "ZAc", "ILA"].includes(cur); // price is in pence/cents
 
+// Share count when Yahoo leaves it blank (as it does for NSE): profit / earnings per share.
+function sharesFrom(ks) {
+  if (num(ks.sharesOutstanding)) return num(ks.sharesOutstanding);
+  if (num(ks.impliedSharesOutstanding)) return num(ks.impliedSharesOutstanding);
+  const ni = num(ks.netIncomeToCommon), eps = num(ks.trailingEps);
+  return ni && eps && ni > 0 && eps > 0 ? ni / eps : null;
+}
+
+// market cap for symbols the quote endpoint left blank
+async function fillCaps(out) {
+  const missing = Object.keys(out).filter((s) => !out[s].marketCap);
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(8, missing.length) }, async () => {
+    while (i < missing.length) {
+      const s = missing[i++];
+      try {
+        const j = await yget("https://query2.finance.yahoo.com/v10/finance/quoteSummary/" + encodeURIComponent(s) + "?modules=price,defaultKeyStatistics");
+        const r = j.quoteSummary.result[0], p = r.price || {}, sh = sharesFrom(r.defaultKeyStatistics || {});
+        const px = num(p.regularMarketPrice);
+        if (num(p.marketCap)) out[s].marketCap = num(p.marketCap);
+        else if (sh && px) out[s].marketCap = sh * px * (minor(p.currency) ? 0.01 : 1);
+      } catch (e) { /* leave it blank */ }
+    }
+  }));
+  return out;
+}
+
 async function batch(symbols) {
   const fields = [
     "marketCap", "trailingPE", "forwardPE", "priceToBook", "trailingAnnualDividendYield", "dividendYield",
@@ -72,7 +99,7 @@ async function batch(symbols) {
       eps: num(q.epsTrailingTwelveMonths),
     };
   }
-  return out;
+  return fillCaps(out);
 }
 
 async function detail(symbol) {
@@ -86,7 +113,7 @@ async function detail(symbol) {
   const desc = ap.longBusinessSummary || "";
   const k = minor(p.currency) ? 0.01 : 1; // ratios built on a pence price need scaling back
   let mc = num(p.marketCap);
-  if (!mc && num(ks.sharesOutstanding) && num(p.regularMarketPrice)) mc = num(ks.sharesOutstanding) * num(p.regularMarketPrice) * k;
+  if (!mc && sharesFrom(ks) && num(p.regularMarketPrice)) mc = sharesFrom(ks) * num(p.regularMarketPrice) * k;
   return {
     symbol,
     name: p.longName || p.shortName || symbol,
