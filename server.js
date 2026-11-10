@@ -4,6 +4,8 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const quotes = require("./api/quotes");
+const chart = require("./api/chart");
+const fundamentals = require("./api/fundamentals");
 
 const PORT = process.env.PORT || 3000;
 const ROOT = path.join(__dirname, "public");
@@ -12,6 +14,8 @@ const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 http.createServer(async (req, res) => {
   const u = new URL(req.url, "http://localhost");
   if (u.pathname === "/api/quotes") return quotes(req, res);
+  if (u.pathname === "/api/chart") return chart(req, res);
+  if (u.pathname === "/api/fundamentals") return fundamentals(req, res);
   let p = path.normalize(path.join(ROOT, u.pathname === "/" ? "index.html" : u.pathname));
   if (!p.startsWith(ROOT)) { res.statusCode = 403; return res.end(); }
   fs.readFile(p, (err, buf) => {
