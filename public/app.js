@@ -867,15 +867,95 @@
   $("#regions").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; state.region = b.dataset.r; renderChips(); renderMain(); };
   $("#views").onclick = (e) => { const b = e.target.closest("button"); if (b) setView(b.dataset.view); };
   $("#ribbon").onclick = (e) => { const b = e.target.closest("[data-region]"); if (b) goToRegion(b.dataset.region); };
-  let qt;
-  $("#search").oninput = (e) => {
-    clearTimeout(qt);
-    qt = setTimeout(() => {
-      state.q = e.target.value.trim();
-      // a company name with no matching country jumps to the Stocks tab
-      if (state.view !== "stocks" && state.q.length >= 2 && !filtered().length && findStockMkt(state.q)) { state.stockMkt = findStockMkt(state.q); return setView("stocks", { instant: true }); }
-      if (["map", "india"].includes(state.view)) setView("cards", { instant: true }); else renderMain(); }, 120); // the Stocks tab filters its own companies
-  };
+  // ── search: results drop down under the box, so they're visible wherever you are on the page ──
+  const IDX = [];
+  const seenCcy = new Set();
+  const CCY_NAME = { CAD: "Canadian dollar", BRL: "Brazilian real", MXN: "Mexican peso", ARS: "Argentine peso", CLP: "Chilean peso", GBP: "British pound sterling", EUR: "Euro", CHF: "Swiss franc", SEK: "Swedish krona", PLN: "Polish zloty", TRY: "Turkish lira", SAR: "Saudi riyal", AED: "UAE dirham", ILS: "Israeli shekel", ZAR: "South African rand", EGP: "Egyptian pound", INR: "Indian rupee", CNY: "Chinese yuan renminbi", HKD: "Hong Kong dollar", JPY: "Japanese yen", KRW: "South Korean won", TWD: "Taiwan dollar", SGD: "Singapore dollar", AUD: "Australian dollar", NZD: "New Zealand dollar", IDR: "Indonesian rupiah", MYR: "Malaysian ringgit", THB: "Thai baht", PHP: "Philippine peso", VND: "Vietnamese dong", PKR: "Pakistani rupee" };
+  M.forEach((c) => {
+    IDX.push({ k: "c", c, name: c.name, icon: c.flag, sub: `${c.exchange}, ${c.ccy}`, hay: [c.name, c.exchange, c.ccy, ...c.indices.map((x) => x[1])].join(" ").toLowerCase() });
+    if (c.ccy !== "USD" && !seenCcy.has(c.ccy)) {
+      seenCcy.add(c.ccy);
+      NAMES[c.ccy + "=X"] = { name: `${CCY_NAME[c.ccy] || c.ccy} (${c.ccy})`, sub: `${c.flag} ${c.ccy} per US dollar` };
+    }
+  });
+  const FLAG = /^([\u{1F1E6}-\u{1F1FF}]{2}|🌏)\s*/u;
+  Object.entries(NAMES).forEach(([s, n]) => {
+    const m = n.sub.match(FLAG);
+    const ccyOf = s.endsWith("=X") ? M.filter((c) => c.ccy + "=X" === s).map((c) => c.name + " " + (CCY_NAME[c.ccy] || "")).join(" ") + " currency forex fx usd dollar" : "";
+    IDX.push({ k: "s", s, name: n.name, icon: m ? m[1] : "", sub: n.sub.replace(FLAG, ""), tick: tickerOf(s).toLowerCase(), hay: (n.name + " " + s + " " + n.sub + " " + ccyOf).toLowerCase() });
+  });
+  function searchHits(q) {
+    q = q.toLowerCase().trim();
+    if (!q) return [];
+    const words = q.split(/[\s/,]+/).filter(Boolean);
+    const hits = [];
+    for (const it of IDX) {
+      const nm = it.name.toLowerCase();
+      let sc = nm.startsWith(q) || it.tick === q ? 0 : (" " + nm).includes(" " + q) ? 1 : it.hay.includes(q) ? 2 : words.every((w) => it.hay.includes(w)) ? 3 : -1;
+      if (sc < 0) continue;
+      if (it.k === "c") sc -= 0.5; // countries first when equally good
+      hits.push([sc, it]);
+    }
+    return hits.sort((a, b) => a[0] - b[0] || a[1].name.length - b[1].name.length).slice(0, 8).map((x) => x[1]);
+  }
+  const sbox = $("#search");
+  const spop = document.createElement("div");
+  spop.id = "search-pop"; spop.className = "search-pop"; spop.hidden = true; spop.setAttribute("role", "listbox");
+  document.body.appendChild(spop);
+  let hits = [], active = 0;
+  function placePop() {
+    const r = sbox.closest(".search").getBoundingClientRect();
+    const w = Math.min(Math.max(r.width, 380), window.innerWidth - 24);
+    spop.style.top = r.bottom + 8 + "px";
+    spop.style.left = Math.max(12, Math.min(r.right - w, window.innerWidth - w - 12)) + "px";
+    spop.style.width = w + "px";
+  }
+  function drawPop() {
+    const q = sbox.value.trim();
+    if (!q) { spop.hidden = true; sbox.setAttribute("aria-expanded", "false"); return; }
+    hits = searchHits(q);
+    active = Math.min(active, Math.max(0, hits.length - 1));
+    spop.innerHTML = hits.length ? hits.map((it, i) => {
+      const s = it.k === "c" ? it.c.indices[0][0] : it.s, qq = Qv(s);
+      const right = qq.price != null ? `<span class="sp-r">${it.k === "c" ? `<small>${esc(it.c.indices[0][1])}</small>` : fmt(qq.price)}${chip(qq.changePct)}</span>` : "";
+      return `<button class="sp-item ${i === active ? "on" : ""}" data-i="${i}" role="option" aria-selected="${i === active}"><span class="sp-ic">${it.icon}</span><span class="sp-t"><b>${esc(it.name)}</b><small>${esc(it.k === "c" ? "Country, " + it.sub : it.sub)}</small></span>${right}</button>`;
+    }).join("") : `<p class="sp-empty">Nothing matches “${esc(q)}”. Try a country, an index, a company or a currency.</p>`;
+    placePop();
+    spop.hidden = false; sbox.setAttribute("aria-expanded", "true");
+  }
+  function closePop() { spop.hidden = true; sbox.setAttribute("aria-expanded", "false"); }
+  function choose(it) {
+    if (!it) return;
+    closePop(); sbox.value = ""; sbox.blur();
+    if (it.k === "s") return openChart(it.s);
+    // a country: show its card, wherever the filters were
+    state.q = ""; state.region = "All"; state.openOnly = false; $("#open-only").checked = false; renderChips();
+    setView("cards", { instant: true });
+    requestAnimationFrame(() => {
+      const card = $("#c-" + it.c.id);
+      if (!card) return;
+      card.scrollIntoView({ behavior: REDUCED ? "auto" : "smooth", block: "center" });
+      card.classList.remove("flash"); void card.offsetWidth; card.classList.add("flash");
+    });
+  }
+  sbox.setAttribute("aria-controls", "search-pop"); sbox.setAttribute("aria-autocomplete", "list");
+  sbox.oninput = () => { active = 0; drawPop(); };
+  sbox.onfocus = () => { if (sbox.value.trim()) drawPop(); };
+  sbox.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if (!hits.length) return;
+      e.preventDefault();
+      active = (active + (e.key === "ArrowDown" ? 1 : -1) + hits.length) % hits.length;
+      drawPop();
+      const on = spop.querySelector(".sp-item.on"); if (on) on.scrollIntoView({ block: "nearest" });
+    } else if (e.key === "Enter") { e.preventDefault(); choose(hits[active]); }
+    else if (e.key === "Escape") { e.stopPropagation(); closePop(); sbox.blur(); }
+  });
+  spop.addEventListener("mousedown", (e) => e.preventDefault()); // keep focus in the box while clicking
+  spop.addEventListener("click", (e) => { const b = e.target.closest("[data-i]"); if (b) choose(hits[+b.dataset.i]); });
+  document.addEventListener("click", (e) => { if (!spop.hidden && !e.target.closest("#search-pop") && !e.target.closest(".search")) closePop(); });
+  window.addEventListener("resize", () => { if (!spop.hidden) placePop(); });
+  window.addEventListener("scroll", () => { if (!spop.hidden) placePop(); }, { passive: true });
   $("#open-only").onchange = (e) => { state.openOnly = e.target.checked; renderMain(); };
   $("#refresh").onclick = load;
   document.addEventListener("click", (e) => {
