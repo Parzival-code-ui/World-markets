@@ -346,3 +346,7 @@ table.t { width: 100%; border-collapse: collapse; font-size: 14.5px; }
 
 /* Windows has no colour flag emojis — load a flags-only font (only used for flag characters) */
 @font-face { font-family: "Twemoji Country Flags"; unicode-range: U+1F1E6-1F1FF, U+1F3F4, U+E0062-E0063, U+E0065, U+E0067, U+E006C, U+E006E, U+E0073-E0074, U+E0077, U+E007F; src: url("https://cdn.jsdelivr.net/npm/country-flag-emoji-polyfill@0.1/dist/TwemojiCountryFlags.woff2") format("woff2"); font-display: swap; }
+
+/* Equal-width digits only where numbers line up; prose keeps natural punctuation spacing */
+html, body { font-variant-numeric: normal; }
+.px, .chg, .pill-c, .ix-m, .t td, .facts dd, .m-p, .rlab, .tp, .tc, .it-p, .hl-px, .mstats .big, .mchart, .axis, .nowline span, .tl-axis, .updated { font-variant-numeric: tabular-nums; }
