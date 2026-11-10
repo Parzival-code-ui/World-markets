@@ -1386,7 +1386,7 @@
   // ── my markets: the visitor's own picks, chosen from everything the site knows ──
   const EXTRA = {
     com: [["PL=F", "Platinum", "$/oz"], ["PA=F", "Palladium", "$/oz"], ["ALI=F", "Aluminium", "$/t"], ["HO=F", "Heating Oil", "$/gal"], ["RB=F", "Gasoline (RBOB)", "$/gal"],
-      ["ZW=F", "Wheat", "¢/bu"], ["ZC=F", "Corn", "¢/bu"], ["ZS=F", "Soybeans", "¢/bu"], ["KC=F", "Coffee", "¢/lb"], ["SB=F", "Sugar", "¢/lb"], ["CT=F", "Cotton", "¢/lb"], ["CC=F", "Cocoa", "$/t"]],
+      ["ZW=F", "Wheat", "$/bu"], ["ZC=F", "Corn", "$/bu"], ["ZS=F", "Soybeans", "$/bu"], ["KC=F", "Coffee", "$/lb"], ["SB=F", "Sugar", "$/lb"], ["CT=F", "Cotton", "$/lb"], ["CC=F", "Cocoa", "$/t"]],
     cry: [["BNB-USD", "BNB", "USD"], ["DOGE-USD", "Dogecoin", "USD"], ["ADA-USD", "Cardano", "USD"], ["TRX-USD", "Tron", "USD"]],
     fx: [["EURUSD=X", "Euro in dollars", "EUR / USD"], ["GBPUSD=X", "Pound in dollars", "GBP / USD"], ["EURINR=X", "Euro in rupees", "EUR / INR"], ["GBPINR=X", "Pound in rupees", "GBP / INR"]],
   };
