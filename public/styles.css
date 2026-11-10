@@ -666,3 +666,7 @@ a.ev:hover { background: var(--wash); }
 .pk-item.on .pk-b { background: var(--sun); border-color: var(--sun); color: var(--on-sun); }
 .pk-note { margin: 10px 8px; color: var(--muted); font-size: 14px; }
 @media (max-width: 640px) { .pk-r { display: none; } .mine-grid { grid-template-columns: 1fr 1fr; } }
+
+/* currency sign before a price, unit after it (filled in as quotes arrive) */
+.px[data-pre]:not([data-pre=""])::before { content: attr(data-pre); }
+.px[data-suf]:not([data-suf=""])::after { content: attr(data-suf); }

@@ -66,7 +66,39 @@
   }
   const cls = (v) => (v == null || !isFinite(v) ? "na" : v > 0 ? "up" : v < 0 ? "down" : "flat");
   const sym = (s, inner, extra = "") => `<a href="${yurl(s)}" data-sym="${esc(s)}" class="lnk ${extra}">${inner}</a>`;
-  const px = (s, d) => `<span class="px" data-px="${esc(s)}">${fmt((state.quotes[s] || {}).price, d)}</span>`;
+  // currency signs: shares, commodities, currencies and crypto get their currency; index levels are points, yields are %
+  const CSIGN = { USD: "$", INR: "₹", GBP: "£", EUR: "€", JPY: "¥", CNY: "¥", HKD: "HK$", TWD: "NT$", KRW: "₩", SGD: "S$", AUD: "A$", CAD: "C$", NZD: "NZ$",
+    BRL: "R$", MXN: "MX$", CHF: "CHF ", ZAR: "R", TRY: "₺", ILS: "₪", PHP: "₱", THB: "฿", VND: "₫", IDR: "Rp ", MYR: "RM ", PKR: "Rs ", SAR: "SAR ", AED: "AED ",
+    SEK: "kr ", DKK: "kr ", NOK: "kr ", PLN: "zł ", EGP: "E£", ARS: "AR$", CLP: "CLP$" };
+  const RATE_SYMS = new Set(["^IRX", "^FVX", "^TNX", "^TYX"]);
+  const INDEX_SET = new Set(["DX-Y.NYB"]);
+  M.forEach((c) => c.indices.forEach(([x]) => INDEX_SET.add(x)));
+  IN.headline.forEach(([x]) => INDEX_SET.add(x));
+  IN.sectors.forEach(([x]) => INDEX_SET.add(x));
+  function curOf(s) {
+    const c = Qv(s).currency;
+    if (c) return c;
+    let m;
+    if ((m = /^([A-Z]{3})?([A-Z]{3})=X$/.exec(s))) return m[2]; // XXX=X is XXX per dollar; EURUSD=X is dollars per euro
+    if (/-USD$/.test(s) || /=F$/.test(s)) return "USD";
+    if (/\.(NS|BO)$/.test(s)) return "INR";
+    return null;
+  }
+  function affix(s) {
+    if (RATE_SYMS.has(s)) return ["", "%"];
+    if (s[0] === "^" || (INDEX_SET.has(s) && !/=X$/.test(s))) return ["", ""];
+    const c = curOf(s);
+    if (!c) return ["", ""];
+    if (c === "GBp" || c === "GBX") return ["", "p"];
+    if (c === "USX") return ["", "¢"];
+    if (c === "ZAc" || c === "ZAC") return ["", "c"];
+    if (c === "ILA") return ["", " ag"];
+    return CSIGN[c] ? [CSIGN[c], ""] : ["", " " + c];
+  }
+  // a price as text with its sign, for one-off places (search lists, chart sheet)
+  const money2 = (s, v, d) => { if (v == null || !isFinite(v)) return fmt(v, d); const [a, b] = affix(s); return a + fmt(v, d) + b; };
+  const affixAttrs = (s) => { const [a, b] = affix(s); return `data-pre="${esc(a)}" data-suf="${esc(b)}"`; };
+  const px = (s, d) => `<span class="px" data-px="${esc(s)}" ${affixAttrs(s)}>${fmt((state.quotes[s] || {}).price, d)}</span>`;
   const chip = (v) => `<span class="chg ${cls(v)}">${pct(v)}</span>`;
   const Qv = (s) => state.quotes[s] || {};
   // live-tagged pieces: patch() finds these by data attribute and updates them in place
@@ -774,7 +806,7 @@
   function patch() {
     renderStatus();
     renderHero(); // headline text, ribbon and (only if leaders changed) the highlight cards
-    document.querySelectorAll("[data-px]").forEach((el) => roll(el, state.prev[el.dataset.px], Qv(el.dataset.px).price));
+    document.querySelectorAll("[data-px]").forEach((el) => { const [a, b] = affix(el.dataset.px); el.dataset.pre = a; el.dataset.suf = b; roll(el, state.prev[el.dataset.px], Qv(el.dataset.px).price); });
     document.querySelectorAll("[data-pc]").forEach((el) => {
       const v = Qv(el.dataset.pc).changePct;
       el.className = "chg " + cls(el.hasAttribute("data-inv") ? -v : v);
@@ -856,7 +888,7 @@
   }
   function modalPrice() {
     const q = state.quotes[modal.sym] || {};
-    $("#m-price").innerHTML = `<span class="m-p">${fmt(q.price)}</span>${chip(q.changePct)}<span class="muted">today</span>`;
+    $("#m-price").innerHTML = `<span class="m-p">${money2(modal.sym, q.price)}</span>${chip(q.changePct)}<span class="muted">today</span>`;
   }
   function starBtn() {
     const b = $("#m-star");
@@ -1047,7 +1079,7 @@
       $("#hc").setAttribute("cx", X(i)); $("#hc").setAttribute("cy", Y(ys[i]));
       const ch = ((ys[i] - base) / base) * 100;
       const extra = [m50 && m50[i] != null ? `<span class="tip-ma ma50">50-day ${fmt(m50[i])}</span>` : "", m200 && m200[i] != null ? `<span class="tip-ma ma200">200-day ${fmt(m200[i])}</span>` : "", showVol && vs[i] ? `<span class="muted">Volume ${volFmt(vs[i])}</span>` : ""].join("");
-      tip.innerHTML = `<b>${fmt(ys[i])}</b> <span class="${cls(ch)}">${pct(ch)}</span>${extra}<span class="muted">${whenFmt(xs[i], range, tz)}</span>`;
+      tip.innerHTML = `<b>${money2(modal.sym, ys[i])}</b> <span class="${cls(ch)}">${pct(ch)}</span>${extra}<span class="muted">${whenFmt(xs[i], range, tz)}</span>`;
       placeTip(tip, r, W, H, X(i), Y(ys[i]));
     });
   }
@@ -1251,7 +1283,7 @@
     active = Math.min(active, Math.max(0, hits.length - 1));
     const row = (it, i) => {
       const s = it.k === "c" ? it.c.indices[0][0] : it.s, qq = Qv(s);
-      const right = qq.price != null ? `<span class="sp-r">${it.k === "c" ? `<small>${esc(it.c.indices[0][1])}</small>` : fmt(qq.price)}${chip(qq.changePct)}</span>`
+      const right = qq.price != null ? `<span class="sp-r">${it.k === "c" ? `<small>${esc(it.c.indices[0][1])}</small>` : money2(s, qq.price)}${chip(qq.changePct)}</span>`
         : it.k === "r" ? `<span class="sp-r"><small>${esc(tickerOf(it.s))}</small></span>` : "";
       return `<button class="sp-item ${i === active ? "on" : ""}" data-i="${i}" role="option" aria-selected="${i === active}"><span class="sp-ic">${it.icon}</span><span class="sp-t"><b>${esc(it.name)}</b><small>${esc(it.k === "c" ? "Country, " + it.sub : it.sub)}</small></span>${right}</button>`;
     };
@@ -1427,7 +1459,7 @@
       if (grouped && it.tag !== last) { last = it.tag; head = `<p class="pk-sec">${esc(it.tag)}</p>`; }
       return head + `<button class="pk-item ${on ? "on" : ""}" data-pick="${esc(it.s)}" aria-pressed="${on}" role="listitem">
         <span class="pk-t"><b>${esc(it.n)}</b><small>${esc(it.sub)}</small></span>
-        <span class="pk-r" data-pkp="${esc(it.s)}">${q.price != null ? `${fmt(q.price)} ${chip(q.changePct)}` : ""}</span>
+        <span class="pk-r" data-pkp="${esc(it.s)}">${q.price != null ? `${money2(it.s, q.price)} ${chip(q.changePct)}` : ""}</span>
         <span class="pk-b" aria-hidden="true">${on ? "✓" : "+"}</span></button>`;
     };
     box.innerHTML = (stocks ? `<div class="pk-mkts">${SM.map((m) => `<button class="chip ${m.id === pick.mkt ? "on" : ""}" data-pkm="${m.id}">${m.flag} ${esc(m.name)}</button>`).join("")}</div>` : "")
@@ -1435,7 +1467,7 @@
   }
   const pickBusy = new Set();
   function patchPickPrices() {
-    document.querySelectorAll("[data-pkp]").forEach((el) => { const q = Qv(el.dataset.pkp); if (q.price != null) el.innerHTML = `${fmt(q.price)} ${chip(q.changePct)}`; });
+    document.querySelectorAll("[data-pkp]").forEach((el) => { const q = Qv(el.dataset.pkp); if (q.price != null) el.innerHTML = `${money2(el.dataset.pkp, q.price)} ${chip(q.changePct)}`; });
   }
   function addPick(it) {
     if (isWatched(it.s)) { toggleWatch(it.s, true); return; }
