@@ -28,7 +28,7 @@ async function fetchOne(symbol) {
   const bars = [];
   for (let i = 0; i < ts.length; i++) if (raw[i] != null) bars.push([ts[i], raw[i]]);
 
-  const price = m.regularMarketPrice != null ? m.regularMarketPrice : bars.length ? bars[bars.length - 1][1] : null;
+  let price = m.regularMarketPrice != null ? m.regularMarketPrice : bars.length ? bars[bars.length - 1][1] : null;
   const t = m.regularMarketTime || (bars.length ? bars[bars.length - 1][0] : null);
 
   // Previous close = last daily close from a day before the latest trade's day.
@@ -40,8 +40,12 @@ async function fetchOne(symbol) {
     }
   }
   if (prev == null) prev = m.previousClose != null ? m.previousClose : null;
-  const first = bars.length ? bars[0][1] : null;
+  let first = bars.length ? bars[0][1] : null;
 
+  // London shares come in pence, US grains in cents and so on: hand back pounds, dollars...
+  const k = MINOR[m.currency] ? 0.01 : 1;
+  const sc = (v) => (v == null ? null : +(v * k).toFixed(6));
+  if (k !== 1) { price = sc(price); prev = sc(prev); first = sc(first); bars.forEach((b) => (b[1] = b[1] * k)); }
   return {
     symbol,
     price,
@@ -49,11 +53,14 @@ async function fetchOne(symbol) {
     change: price != null && prev != null ? price - prev : null,
     changePct: price != null && prev ? ((price - prev) / prev) * 100 : null,
     change1mPct: price != null && first ? ((price - first) / first) * 100 : null,
-    currency: m.currency || null,
+    currency: MINOR[m.currency] || m.currency || null,
     time: t,
     spark: bars.map((b) => +b[1].toFixed(6)),
   };
 }
+
+// Yahoo's minor-unit currencies and the main currency they belong to
+const MINOR = { GBp: "GBP", GBX: "GBP", USX: "USD", ZAc: "ZAR", ILA: "ILS" };
 
 // Demo mode (MOCK=1): deterministic fake prices so the UI can be tried offline.
 function mockOne(symbol) {

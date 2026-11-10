@@ -94,7 +94,11 @@ module.exports = requireUser(async function handler(req, res) {
     const q = (d.indicators && d.indicators.quote && d.indicators.quote[0]) || {};
     const close = q.close || [], vol = q.volume || [];
     const all = [];
-    for (let i = 0; i < ts.length; i++) if (close[i] != null) all.push([ts[i], +close[i].toFixed(4), vol[i] || 0]);
+    // pence, US cents and the like become pounds and dollars, so the chart matches the prices elsewhere
+    const MINOR = { GBp: "GBP", GBX: "GBP", USX: "USD", ZAc: "ZAR", ILA: "ILS" };
+    const k = MINOR[m.currency] ? 0.01 : 1;
+    const sc = (v) => (v == null ? null : +(v * k).toFixed(6));
+    for (let i = 0; i < ts.length; i++) if (close[i] != null) all.push([ts[i], +(close[i] * k).toFixed(6), vol[i] || 0]);
     const f = finish(all, range);
     const pts = f.points;
     send(res, 200, {
@@ -102,14 +106,14 @@ module.exports = requireUser(async function handler(req, res) {
       name: m.longName || m.shortName || null,
       exchange: m.fullExchangeName || m.exchangeName || null,
       type: m.instrumentType || null,
-      currency: m.currency || null,
+      currency: MINOR[m.currency] || m.currency || null,
       tz: m.exchangeTimezoneName || "UTC",
-      price: m.regularMarketPrice ?? (pts.length ? pts[pts.length - 1][1] : null),
-      prevClose: range === "1d" ? (m.chartPreviousClose ?? m.previousClose ?? null) : (pts.length ? pts[0][1] : null),
-      dayHigh: m.regularMarketDayHigh ?? null,
-      dayLow: m.regularMarketDayLow ?? null,
-      high52: m.fiftyTwoWeekHigh ?? null,
-      low52: m.fiftyTwoWeekLow ?? null,
+      price: m.regularMarketPrice != null ? sc(m.regularMarketPrice) : (pts.length ? pts[pts.length - 1][1] : null),
+      prevClose: range === "1d" ? sc(m.chartPreviousClose ?? m.previousClose ?? null) : (pts.length ? pts[0][1] : null),
+      dayHigh: sc(m.regularMarketDayHigh ?? null),
+      dayLow: sc(m.regularMarketDayLow ?? null),
+      high52: sc(m.fiftyTwoWeekHigh ?? null),
+      low52: sc(m.fiftyTwoWeekLow ?? null),
       ...f,
     }, ttl);
   } catch (e) {

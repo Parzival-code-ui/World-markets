@@ -103,7 +103,7 @@ async function batch(symbols) {
       marketCap: mc,
       pe: num(q.trailingPE),
       fpe: num(q.forwardPE),
-      pb: num(q.priceToBook),
+      pb: num(q.priceToBook) != null ? num(q.priceToBook) * (minor(q.currency) ? 0.01 : 1) : null,
       divYield: dy,
       eps: num(q.epsTrailingTwelveMonths),
       ...nextResults(q),
@@ -162,7 +162,7 @@ async function detail(symbol) {
     freeCashflow: num(fd.freeCashflow),
     rating: fd.recommendationKey && fd.recommendationKey !== "none" ? fd.recommendationKey : null,
     analysts: num(fd.numberOfAnalystOpinions),
-    target: num(fd.targetMeanPrice), // same units as the quoted price
+    target: num(fd.targetMeanPrice) != null ? num(fd.targetMeanPrice) * k : null, // in pounds etc., like the prices
     results: ed.length ? Math.min(...ed) : null,
     resultsEstimate: ed.length > 1 || !!ce.isEarningsDateEstimate,
   };
