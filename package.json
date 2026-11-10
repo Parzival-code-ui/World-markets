@@ -1,0 +1,12 @@
+{
+  "name": "world-markets",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Global markets dashboard: indices, FX, rates, commodities, crypto",
+  "scripts": {
+    "start": "node server.js",
+    "demo": "MOCK=1 node server.js",
+    "check": "node scripts/check-symbols.js"
+  },
+  "engines": { "node": ">=18" }
+}
