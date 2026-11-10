@@ -4,7 +4,13 @@
   const REGIONS = ["All", "Americas", "Europe", "Middle East & Africa", "Asia-Pacific"];
   const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  const state = { quotes: {}, prev: {}, region: "All", view: "cards", q: "", openOnly: false, sort: { key: "changePct", dir: -1 }, stockSort: { key: "changePct", dir: -1 }, fetchedAt: null, mock: false, error: null };
+  const state = { quotes: {}, prev: {}, region: "All", view: "cards", q: "", openOnly: false, sort: { key: "changePct", dir: -1 }, stockSort: { key: "changePct", dir: -1 }, fetchedAt: null, mock: false, error: null, hadData: false, stale: false };
+  const store = { get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
+  // last prices seen, so a return visit paints instantly
+  const cached = store.get("wm-quotes");
+  if (cached && cached.quotes && Date.now() - cached.t < 3 * 864e5) {
+    state.quotes = cached.quotes; state.fetchedAt = cached.t; state.hadData = true; state.stale = true;
+  }
 
   // ── symbols & names ──────────────────────────────────────────────────────
   const fx = (c) => (c === "USD" ? null : c + "=X");
@@ -41,6 +47,11 @@
   const sym = (s, inner, extra = "") => `<a href="${yurl(s)}" data-sym="${esc(s)}" class="lnk ${extra}">${inner}</a>`;
   const px = (s, d) => `<span class="px" data-px="${esc(s)}">${fmt((state.quotes[s] || {}).price, d)}</span>`;
   const chip = (v) => `<span class="chg ${cls(v)}">${pct(v)}</span>`;
+  const Qv = (s) => state.quotes[s] || {};
+  // live-tagged pieces: patch() finds these by data attribute and updates them in place
+  const chipS = (s, inv) => { const v = Qv(s).changePct; return `<span class="chg ${cls(inv ? -v : v)}" data-pc="${esc(s)}"${inv ? " data-inv" : ""}>${pct(v)}</span>`; };
+  const pctT = (s, f = "changePct", sfx = "", extra = "", plain = false) => { const v = Qv(s)[f]; return `<span class="${extra} ${plain ? "" : cls(v)}" data-pt="${esc(s)}" data-f="${f}" data-sfx="${esc(sfx)}"${plain ? " data-plain" : ""}>${v != null ? pct(v) + sfx : loading() ? SK : ""}</span>`; };
+  const sparkS = (s, w = 64, h = 22) => `<span class="spk" data-sp="${esc(s)}" data-w="${w}" data-h="${h}">${spark(Qv(s).spark, w, h)}</span>`;
   const listJoin = (a) => a.length < 2 ? a.join("") : a.slice(0, -1).join(", ") + " and " + a[a.length - 1];
 
   function spark(arr, w = 64, h = 22) {
@@ -51,12 +62,23 @@
     const c = arr[arr.length - 1] >= arr[0] ? "var(--up)" : "var(--down)";
     return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><path d="${d}L${w} ${h}L0 ${h}Z" fill="${c}" opacity=".12"/><path d="${d}" fill="none" stroke="${c}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
   }
-  function heatColor(p, max = 3) {
-    if (p == null || !isFinite(p)) return "#1f2a40";
-    const t = Math.min(Math.abs(p) / max, 1);
-    const tgt = p >= 0 ? [16, 150, 110] : [214, 72, 80];
-    const base = [31, 42, 64];
-    return `rgb(${base.map((v, i) => Math.round(v + (tgt[i] - v) * (0.22 + 0.78 * t))).join(",")})`;
+  // theme palette, read from CSS variables so the heatmap and map follow the chosen theme
+  let pal;
+  function readPalette() {
+    const cs = getComputedStyle(document.documentElement);
+    const trip = (n) => cs.getPropertyValue(n).split(",").map((x) => +x.trim());
+    pal = { base: trip("--heat-base"), up: trip("--heat-up"), down: trip("--heat-down"), land: cs.getPropertyValue("--land").trim(), text: cs.getPropertyValue("--text").trim() };
+  }
+  readPalette();
+  function heatRGB(p, max = 3) {
+    if (p == null || !isFinite(p)) return pal.base;
+    const t = Math.min(Math.abs(p) / max, 1), tgt = p >= 0 ? pal.up : pal.down;
+    return pal.base.map((v, i) => Math.round(v + (tgt[i] - v) * (0.22 + 0.78 * t)));
+  }
+  const heatColor = (p, max) => `rgb(${heatRGB(p, max).join(",")})`;
+  function tileStyle(p, max) {
+    const c = heatRGB(p, max), lum = (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255;
+    return `--tile:rgb(${c.join(",")});--tile-ink:${lum > 0.6 ? "#0f172a" : "#fff"}`;
   }
 
   // ── time zones & market hours ────────────────────────────────────────────
@@ -108,15 +130,21 @@
       if (!r.ok) throw new Error("the price service answered " + r.status);
       const j = await r.json();
       state.prev = Object.fromEntries(Object.entries(state.quotes).map(([k, v]) => [k, v && v.price]));
-      state.quotes = j.quotes || {};
+      // keep the last good value for any symbol that failed this round
+      const fresh = j.quotes || {};
+      for (const k in fresh) if (fresh[k] && fresh[k].price == null && state.quotes[k] && state.quotes[k].price != null) fresh[k] = state.quotes[k];
+      state.quotes = fresh;
       state.fetchedAt = j.fetchedAt || Date.now();
       state.mock = !!j.mock;
       state.error = null;
+      state.stale = false;
+      if (!j.mock) store.set("wm-quotes", { t: state.fetchedAt, quotes: state.quotes });
     } catch (e) {
       state.error = e.message || "network error";
     }
     setTimeout(() => btn.classList.remove("spin"), 400);
-    render(true);
+    if (state.hadData && !state.error) patch(); else render();
+    if (!state.error) state.hadData = true;
   }
 
   // ── hero ─────────────────────────────────────────────────────────────────
@@ -180,15 +208,15 @@
     M.forEach((c) => c.indices.forEach(([s, n]) => { const q = state.quotes[s]; if (!s.includes("VIX") && q && q.changePct != null) rows.push({ c, s, n, q }); }));
     rows.sort((a, b) => b.q.changePct - a.q.changePct);
     const best = rows[0], worst = rows[rows.length - 1];
-    const tile = (label, s, name, where) => {
-      const q = state.quotes[s] || {};
-      return `<a class="hl" href="${yurl(s)}" data-sym="${esc(s)}">
+    const key = (best ? best.s : "") + "|" + (worst ? worst.s : "");
+    if (renderHighlights.key === key && $("#highlights").children.length) return; // values get patched in place
+    renderHighlights.key = key;
+    const tile = (label, s, name, where) => `<a class="hl" href="${yurl(s)}" data-sym="${esc(s)}">
         <span class="hl-label">${label}</span>
         <span class="hl-name">${esc(name)}</span>
         <span class="hl-where">${where}</span>
-        <span class="hl-row"><span class="hl-px">${px(s)}</span>${chip(q.changePct)}</span>
-        ${spark(q.spark, 220, 36)}</a>`;
-    };
+        <span class="hl-row"><span class="hl-px">${px(s)}</span>${chipS(s)}</span>
+        ${sparkS(s, 220, 36)}</a>`;
     $("#highlights").innerHTML =
       (best ? tile("Strongest today", best.s, best.n, `${best.c.flag} ${esc(best.c.name)}`) : tile("Strongest today", "^GSPC", "Waiting for prices", "")) +
       (worst ? tile("Weakest today", worst.s, worst.n, `${worst.c.flag} ${esc(worst.c.name)}`) : tile("Weakest today", "^DJI", "Waiting for prices", "")) +
@@ -197,15 +225,15 @@
   }
 
   function renderStrip() {
-    $("#strip").innerHTML = G.map((g) => `<div class="strip-group"><span class="strip-title">${esc(g.group)}</span>${g.items.map(([s, n]) => {
-      const q = state.quotes[s] || {};
-      return `<a class="pill" href="${yurl(s)}" data-sym="${esc(s)}"><span class="pill-n">${esc(n)}</span><span class="pill-p">${px(s)}</span><span class="${cls(q.changePct)} pill-c">${pct(q.changePct)}</span></a>`;
-    }).join("")}</div>`).join("");
+    $("#strip").innerHTML = G.map((g) => `<div class="strip-group"><span class="strip-title">${esc(g.group)}</span>${g.items.map(([s, n]) =>
+      `<a class="pill" href="${yurl(s)}" data-sym="${esc(s)}"><span class="pill-n">${esc(n)}</span><span class="pill-p">${px(s)}</span>${pctT(s, "changePct", "", "pill-c")}</a>`
+    ).join("")}</div>`).join("");
   }
 
   function renderStatus() {
     const el = $("#status-line");
     if (state.error) { el.textContent = `Prices didn't load because ${state.error}. Retrying in a minute.`; el.classList.add("err"); }
+    else if (state.stale) { el.textContent = `Showing prices from ${new Date(state.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. Updating…`; el.classList.remove("err"); }
     else if (state.fetchedAt) { el.textContent = `Updated ${new Date(state.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}, refreshes every minute`; el.classList.remove("err"); }
     $("#demo-banner").hidden = !state.mock;
   }
@@ -237,17 +265,17 @@
     else y = { v: c.wgb ? `<a class="ext" href="https://www.worldgovernmentbonds.com/country/${c.wgb}/" target="_blank" rel="noopener">See yield</a>` : "—", d: "no free source" };
     const mc = c.mcap ? { v: "$" + c.mcap[0].toFixed(1) + " trillion", d: c.mcap[1] } : null;
     const item = (k, o) => `<div><dt>${k}</dt><dd>${o.v}</dd><dd class="d">${o.d}</dd></div>`;
-    return `<dl class="facts">${item("Currency", f)}${item("Policy rate", pol)}${item("10-year yield", y)}${mc ? item("Market size", mc) : ""}</dl>`;
+    return `<dl class="facts" data-facts="${c.id}">${item("Currency", f)}${item("Policy rate", pol)}${item("10-year yield", y)}${mc ? item("Market size", mc) : ""}</dl>`;
   }
+  const stInner = (s) => `<span class="dot"></span><span><b>${s.text}</b><small>${s.sub}, ${s.label} local</small></span>`;
   function card(c) {
     const s = status(c);
-    const rows = c.indices.map(([s2, n]) => {
-      const q = state.quotes[s2] || {};
-      return `<li>${sym(s2, `<span class="ix-n">${esc(n)}</span>`)}<span class="ix-p">${px(s2)}</span>${chip(q.changePct)}<span class="ix-m ${cls(q.change1mPct)}" title="Past month">${q.change1mPct != null ? pct(q.change1mPct) : ""}</span>${spark(q.spark)}</li>`;
-    }).join("");
-    return `<article class="card ${s.kind}" id="c-${c.id}">
+    const rows = c.indices.map(([s2, n]) =>
+      `<li>${sym(s2, `<span class="ix-n">${esc(n)}</span>`)}<span class="ix-p">${px(s2)}</span>${chipS(s2)}${pctT(s2, "change1mPct", "", "ix-m")}${sparkS(s2)}</li>`
+    ).join("");
+    return `<article class="card ${s.kind}" id="c-${c.id}" data-card="${c.id}">
       <header><span class="flag">${c.flag}</span><div class="who"><h3>${esc(c.name)}</h3><p>${esc(c.exchange)}</p></div>
-        <div class="st"><span class="dot"></span><span><b>${s.text}</b><small>${s.sub}, ${s.label} local</small></span></div></header>
+        <div class="st" data-st="${c.id}">${stInner(s)}</div></header>
       <ul class="ix">${rows}</ul>
       ${facts(c)}
     </article>`;
@@ -282,7 +310,7 @@
       const proj = d3.geoNaturalEarth1().fitExtent([[2, 2], [W - 2, H - 2]], { type: "FeatureCollection", features });
       const path = d3.geoPath(proj);
       const tip = $("#maptip");
-      const fillFor = (f) => ISO[f.id] ? heatColor(mainMove(byId[ISO[f.id]])) : EURO.includes(f.id) ? heatColor(mainMove(byId.eu)) : "#172136";
+      const fillFor = (f) => ISO[f.id] ? heatColor(mainMove(byId[ISO[f.id]])) : EURO.includes(f.id) ? heatColor(mainMove(byId.eu)) : pal.land;
       let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="World map shaded by daily market moves">`;
       features.forEach((f) => {
         const id = ISO[f.id] || (EURO.includes(f.id) ? "eu" : "");
@@ -294,7 +322,7 @@
         if (DOTS[c.id]) xy = proj(DOTS[c.id]);
         else if (open) { const iso = Object.keys(ISO).find((k) => ISO[k] === c.id); const f = features.find((x) => x.id === iso); if (f) xy = path.centroid(f); }
         if (!xy || isNaN(xy[0])) return;
-        if (DOTS[c.id]) svg += `<circle cx="${xy[0]}" cy="${xy[1]}" r="5" fill="${heatColor(mainMove(c))}" stroke="#e8ecf4" stroke-width="1" class="cty" data-m="${c.id}" data-nm="${esc(c.name)}"/>`;
+        if (DOTS[c.id]) svg += `<circle cx="${xy[0]}" cy="${xy[1]}" r="5" fill="${heatColor(mainMove(c))}" stroke="${pal.text}" stroke-width="1" class="cty" data-m="${c.id}" data-nm="${esc(c.name)}"/>`;
         if (open) svg += `<circle cx="${xy[0]}" cy="${xy[1]}" r="3.5" class="opendot"/>`;
       });
       box.innerHTML = svg + "</svg>";
@@ -335,16 +363,15 @@
   function renderIndia(el) {
     const Q = (s) => state.quotes[s] || {};
     const head = IN.headline.map(([s, n]) => {
-      const q = Q(s), inr = s === "INR=X";
+      const inr = s === "INR=X";
       return `<a class="itile" href="${yurl(s)}" data-sym="${esc(s)}"><span class="it-n">${esc(n)}</span>
         <span class="it-p">${inr ? "₹" : ""}${px(s)}</span>
-        <span class="it-c"><span class="chg ${cls(inr ? -q.changePct : q.changePct)}">${pct(q.changePct)}</span><span class="muted">${q.change1mPct != null ? pct(q.change1mPct) + " this month" : ""}</span></span>
-        ${spark(q.spark, 220, 34)}</a>`;
+        <span class="it-c">${chipS(s, inr)}${pctT(s, "change1mPct", " this month", "muted", true)}</span>
+        ${sparkS(s, 220, 34)}</a>`;
     }).join("");
     const secs = IN.sectors.map(([s, n]) => ({ s, n, q: Q(s) })).sort((a, b) => (b.q.changePct ?? -1e9) - (a.q.changePct ?? -1e9));
-    const sectorHtml = secs.map((r) => `<a class="tile" href="${yurl(r.s)}" data-sym="${esc(r.s)}" style="--tile:${heatColor(r.q.changePct, 2)}"><span class="tn">${esc(r.n)}</span><span class="tp">${pct(r.q.changePct)}</span><span class="tc">${r.q.change1mPct != null ? pct(r.q.change1mPct) + " this month" : ""}</span></a>`).join("");
+    const sectorHtml = secs.map((r) => `<a class="tile" href="${yurl(r.s)}" data-sym="${esc(r.s)}" data-tile="${esc(r.s)}" data-max="2" style="${tileStyle(r.q.changePct, 2)}"><span class="tn">${esc(r.n)}</span><span class="tp">${pct(r.q.changePct)}</span><span class="tc">${r.q.change1mPct != null ? pct(r.q.change1mPct) + " this month" : ""}</span></a>`).join("");
     const st = IN.stocks.map(([s, n, sec]) => ({ s, n, sec, q: Q(s) }));
-    const adv = st.filter((r) => r.q.changePct > 0).length, dec = st.filter((r) => r.q.changePct < 0).length, unch = st.length - adv - dec;
     const k = state.stockSort.key, d = state.stockSort.dir;
     const val = (r) => (k === "n" ? r.n : k === "sec" ? r.sec : r.q[k]);
     st.sort((a, b) => { const x = val(a), y = val(b); if (x == null) return 1; if (y == null) return -1; return (typeof x === "string" ? x.localeCompare(y) : x - y) * d; });
@@ -352,14 +379,13 @@
     const s = status(byId.in);
     el.innerHTML = `
       <section class="in-hero"><div><h2>India today</h2><p class="muted">NSE and BSE are <b class="${s.kind}">${s.text.toLowerCase()}</b>. ${s.sub}.</p></div>
-        <div class="breadth" title="How many of the 30 largest stocks are up or down today"><div class="bbar"><i class="bup" style="flex:${adv}"></i><i class="bun" style="flex:${unch}"></i><i class="bdn" style="flex:${dec}"></i></div>
-          <p><span class="up">${adv} up</span>, <span class="muted">${unch} flat</span>, <span class="down">${dec} down</span> among the 30 largest stocks</p></div></section>
+        <div class="breadth" id="breadth" title="How many of the 30 largest stocks are up or down today">${breadthHTML()}</div></section>
       <div class="itiles">${head}</div>
       <section class="panel"><div class="panel-h"><div><h2>Sectors</h2><p class="muted">Sorted by today's move. Click a sector to see its chart.</p></div></div><div class="heat sectors">${sectorHtml}</div></section>
       <section class="panel"><div class="panel-h"><div><h2>Largest companies</h2><p class="muted">30 of the biggest Nifty 50 stocks. Click a column to sort.</p></div></div>
       <div class="tscroll"><table class="t"><thead><tr>${th("n", "Company")}${th("sec", "Sector")}${th("price", "Price (₹)", 1)}${th("changePct", "Today", 1)}${th("change1mPct", "Month", 1)}<th class="r">Trend</th></tr></thead><tbody>
         ${st.map((r) => `<tr><td>${sym(r.s, `<b>${esc(r.n)}</b><small>${esc(r.s.replace(".NS", ""))}</small>`)}</td><td class="muted">${esc(r.sec)}</td>
-          <td class="r">${px(r.s)}</td><td class="r">${chip(r.q.changePct)}</td><td class="r ${cls(r.q.change1mPct)}">${pct(r.q.change1mPct)}</td><td class="r">${spark(r.q.spark)}</td></tr>`).join("")}
+          <td class="r">${px(r.s)}</td><td class="r">${chipS(r.s)}</td><td class="r">${pctT(r.s, "change1mPct")}</td><td class="r">${sparkS(r.s)}</td></tr>`).join("")}
       </tbody></table></div></section>`;
     el.querySelectorAll("[data-sk]").forEach((b) => b.onclick = () => {
       const key = b.dataset.sk;
@@ -391,7 +417,7 @@
     } else if (state.view === "heat") {
       const rows = allRows(list).sort((a, b) => (b.q.changePct ?? -1e9) - (a.q.changePct ?? -1e9));
       main.innerHTML = `<section class="panel"><div class="panel-h"><div><h2>Every index, strongest to weakest</h2><p class="muted">Deeper green or red means a bigger move today.</p></div><div class="legend" aria-hidden="true"><span>−3%</span><i></i><span>+3%</span></div></div>
-        <div class="heat">${rows.map((r) => `<a class="tile" href="${yurl(r.s)}" data-sym="${esc(r.s)}" style="--tile:${heatColor(r.q.changePct)}"><span class="tn">${esc(r.n)}</span><span class="tp">${pct(r.q.changePct)}</span><span class="tc">${r.c.flag} ${esc(r.c.name)}</span></a>`).join("")}</div></section>`;
+        <div class="heat">${rows.map((r) => `<a class="tile" href="${yurl(r.s)}" data-sym="${esc(r.s)}" data-tile="${esc(r.s)}" style="${tileStyle(r.q.changePct)}"><span class="tn">${esc(r.n)}</span><span class="tp">${pct(r.q.changePct)}</span><span class="tc">${r.c.flag} ${esc(r.c.name)}</span></a>`).join("")}</div></section>`;
     } else {
       const k = state.sort.key, d = state.sort.dir;
       const val = (r) => k === "name" ? r.n : k === "country" ? r.c.name : k === "status" ? status(r.c).kind : r.q[k];
@@ -399,7 +425,7 @@
       const th = (key, label, r) => `<th class="${r ? "r" : ""}" aria-sort="${k === key ? (d > 0 ? "ascending" : "descending") : "none"}"><button data-k="${key}">${label}<i>${k === key ? (d > 0 ? "↑" : "↓") : ""}</i></button></th>`;
       main.innerHTML = `<section class="panel"><div class="tscroll"><table class="t"><thead><tr>${th("country", "Country")}${th("name", "Index")}${th("price", "Level", 1)}${th("changePct", "Today", 1)}${th("change1mPct", "Month", 1)}${th("status", "Market")}<th class="r">Trend</th></tr></thead><tbody>
         ${rows.map((r) => { const s = status(r.c); return `<tr><td><span class="flag">${r.c.flag}</span>${esc(r.c.name)}</td><td>${sym(r.s, esc(r.n))}</td>
-          <td class="r">${px(r.s)}</td><td class="r">${chip(r.q.changePct)}</td><td class="r ${cls(r.q.change1mPct)}">${pct(r.q.change1mPct)}</td><td><span class="mstat ${s.kind}">${s.text}</span></td><td class="r">${spark(r.q.spark)}</td></tr>`; }).join("")}
+          <td class="r">${px(r.s)}</td><td class="r">${chipS(r.s)}</td><td class="r">${pctT(r.s, "change1mPct")}</td><td><span class="mstat ${s.kind}" data-ms="${r.c.id}">${s.text}</span></td><td class="r">${sparkS(r.s)}</td></tr>`; }).join("")}
         </tbody></table></div></section>`;
       main.querySelectorAll("[data-k]").forEach((b) => b.onclick = () => {
         const key = b.dataset.k;
@@ -409,14 +435,61 @@
     }
   }
 
-  // price flashes after a refresh
-  function flash() {
-    document.querySelectorAll("[data-px]").forEach((el) => {
-      const s = el.dataset.px, a = state.prev[s], b = (state.quotes[s] || {}).price;
-      if (a == null || b == null || a === b) return;
-      el.classList.remove("fl-up", "fl-down"); void el.offsetWidth;
-      el.classList.add(b > a ? "fl-up" : "fl-down");
+  function breadthHTML() {
+    const st = IN.stocks.map(([s]) => Qv(s).changePct);
+    const adv = st.filter((v) => v > 0).length, dec = st.filter((v) => v < 0).length, unch = st.length - adv - dec;
+    return `<div class="bbar"><i class="bup" style="flex:${adv}"></i><i class="bun" style="flex:${unch}"></i><i class="bdn" style="flex:${dec}"></i></div>
+      <p><span class="up">${adv} up</span>, <span class="muted">${unch} flat</span>, <span class="down">${dec} down</span> among the 30 largest stocks</p>`;
+  }
+
+  // ── in-place updates ─────────────────────────────────────────────────────
+  // Numbers roll from their old value to the new one; nothing else on the page moves.
+  const ease = (t) => 1 - Math.pow(1 - t, 3);
+  function roll(el, a, b) {
+    if (REDUCED || a == null || b == null || a === b) { el.textContent = fmt(b); return; }
+    const d = Math.abs(b) >= 1 ? 2 : 4, t0 = performance.now(), T = 650;
+    const step = (now) => {
+      const k = Math.min(1, (now - t0) / T);
+      el.textContent = fmt(a + (b - a) * ease(k), d);
+      if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+    el.classList.remove("fl-up", "fl-down"); void el.offsetWidth;
+    el.classList.add(b > a ? "fl-up" : "fl-down");
+  }
+  function patch() {
+    renderStatus();
+    renderHero(); // headline text, ribbon and (only if leaders changed) the highlight cards
+    document.querySelectorAll("[data-px]").forEach((el) => roll(el, state.prev[el.dataset.px], Qv(el.dataset.px).price));
+    document.querySelectorAll("[data-pc]").forEach((el) => {
+      const v = Qv(el.dataset.pc).changePct;
+      el.className = "chg " + cls(el.hasAttribute("data-inv") ? -v : v);
+      el.innerHTML = pct(v);
     });
+    document.querySelectorAll("[data-pt]").forEach((el) => {
+      const v = Qv(el.dataset.pt)[el.dataset.f];
+      if (!el.hasAttribute("data-plain")) { el.classList.remove("up", "down", "flat", "na"); el.classList.add(cls(v)); }
+      el.innerHTML = v != null ? pct(v) + el.dataset.sfx : "";
+    });
+    document.querySelectorAll("[data-sp]").forEach((el) => { el.innerHTML = spark(Qv(el.dataset.sp).spark, +el.dataset.w, +el.dataset.h); });
+    document.querySelectorAll("[data-tile]").forEach((el) => {
+      const q = Qv(el.dataset.tile);
+      el.setAttribute("style", tileStyle(q.changePct, +(el.dataset.max || 3)));
+      el.querySelector(".tp").innerHTML = pct(q.changePct);
+    });
+    document.querySelectorAll("[data-facts]").forEach((el) => { el.outerHTML = facts(byId[el.dataset.facts]); });
+    const br = $("#breadth"); if (br) br.innerHTML = breadthHTML();
+    document.querySelectorAll("#map path[data-m], #map circle[data-m]").forEach((p) => p.setAttribute("fill", heatColor(mainMove(byId[p.dataset.m]))));
+    if (modal.sym) modalPrice();
+  }
+  // open/closed labels change with the clock, not with prices
+  function patchStatus() {
+    document.querySelectorAll("[data-st]").forEach((el) => {
+      const c = byId[el.dataset.st], s = status(c);
+      el.innerHTML = stInner(s);
+      const card = el.closest(".card"); if (card) card.className = "card " + s.kind;
+    });
+    document.querySelectorAll("[data-ms]").forEach((el) => { const s = status(byId[el.dataset.ms]); el.className = "mstat " + s.kind; el.textContent = s.text; });
   }
 
   // ── chart sheet ──────────────────────────────────────────────────────────
@@ -424,12 +497,12 @@
   const RANGE_WORD = { "1d": "Today", "5d": "5 days", "1mo": "1 month", "6mo": "6 months", "1y": "1 year", "5y": "5 years" };
   const chartCache = {};
   const modal = { sym: null, range: "1mo", lastFocus: null };
-  function openChart(s) {
+  function openChart(s, viaKeyboard) {
     modal.sym = s; modal.lastFocus = document.activeElement;
     const m = $("#modal"); m.hidden = false; requestAnimationFrame(() => m.classList.add("in"));
     document.body.classList.add("locked");
     drawModal();
-    setTimeout(() => $("#m-close").focus(), 50);
+    setTimeout(() => (viaKeyboard ? $("#m-close") : $(".mbox")).focus({ preventScroll: true }), 50);
   }
   function closeChart() {
     const m = $("#modal"); m.classList.remove("in");
@@ -437,14 +510,18 @@
     document.body.classList.remove("locked"); modal.sym = null;
     if (modal.lastFocus) modal.lastFocus.focus({ preventScroll: true });
   }
-  async function getChart(s, range) {
+  // promises are cached too, so a hover-prefetch and the click share one request
+  function getChart(s, range) {
     const key = s + "|" + range, hit = chartCache[key];
-    if (hit && Date.now() - hit.t < 60_000) return hit.d;
-    const r = await fetch(`/api/chart?symbol=${encodeURIComponent(s)}&range=${range}`);
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || "HTTP " + r.status);
-    chartCache[key] = { t: Date.now(), d };
-    return d;
+    if (hit && Date.now() - hit.t < 60_000) return hit.p;
+    const p = fetch(`/api/chart?symbol=${encodeURIComponent(s)}&range=${range}`).then(async (r) => {
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "HTTP " + r.status);
+      return d;
+    });
+    chartCache[key] = { t: Date.now(), p };
+    p.catch(() => delete chartCache[key]);
+    return p;
   }
   function modalPrice() {
     const q = state.quotes[modal.sym] || {};
@@ -456,10 +533,13 @@
     $("#m-ranges").innerHTML = RANGES.map(([k, l]) => `<button data-r="${k}" role="tab" aria-selected="${k === range}" class="${k === range ? "on" : ""}">${l}</button>`).join("");
     $("#m-yahoo").href = yurl(s);
     modalPrice();
-    $("#m-chart").innerHTML = '<div class="chart-sk"></div>';
-    $("#m-stats").innerHTML = "";
+    const p = getChart(s, range);
+    // only show the placeholder if the data isn't already here
+    let settled = false; p.then(() => { settled = true; }, () => { settled = true; });
+    await Promise.resolve();
+    if (!settled) { $("#m-chart").innerHTML = '<div class="chart-sk"></div>'; $("#m-stats").innerHTML = ""; }
     try {
-      const d = await getChart(s, range);
+      const d = await p;
       if (modal.sym !== s || modal.range !== range) return;
       drawSvgChart(d, range);
       const rc = d.price != null && d.prevClose ? ((d.price - d.prevClose) / d.prevClose) * 100 : null;
@@ -498,7 +578,7 @@
       if (range === "1d") return dt.toLocaleTimeString("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit" });
       if (range === "5d") return dt.toLocaleDateString("en-GB", { timeZone: tz, weekday: "short" });
       if (range === "5y") return dt.toLocaleDateString("en-GB", { timeZone: tz, year: "numeric" });
-      if (range === "1y" || range === "6mo") return dt.toLocaleDateString("en-GB", { timeZone: tz, month: "short" });
+      if (range === "1y") return dt.toLocaleDateString("en-GB", { timeZone: tz, month: "short", year: "2-digit" });
       return dt.toLocaleDateString("en-GB", { timeZone: tz, day: "numeric", month: "short" });
     };
     let xl = "";
@@ -535,10 +615,10 @@
   }
 
   // ── render & controls ────────────────────────────────────────────────────
-  function render(fromLoad) {
+  function render() {
+    renderHighlights.key = null;
     renderStatus(); renderHero(); renderStrip(); renderMain();
     if (modal.sym) modalPrice();
-    if (fromLoad) flash();
   }
   function renderChips() {
     $("#regions").innerHTML = REGIONS.map((r) => `<button class="chip ${r === state.region ? "on" : ""}" data-r="${r}" aria-pressed="${r === state.region}">${r === "All" ? "All regions" : r}</button>`).join("");
@@ -565,6 +645,50 @@
     if (t) window.scrollTo({ top: t.getBoundingClientRect().top + window.scrollY - 8, behavior: REDUCED ? "auto" : "smooth" });
   }
 
+  // ── themes ───────────────────────────────────────────────────────────────
+  const THEMES = [
+    ["auto", "Match my device", ["#0f1726", "#f6f7f9", "#f6b94c"]],
+    ["night", "Night", ["#0f1726", "#151f33", "#f6b94c"]],
+    ["graphite", "Graphite", ["#121314", "#1d1e21", "#5ccfe6"]],
+    ["ocean", "Ocean", ["#06232a", "#0b3038", "#7ce0c3"]],
+    ["day", "Daylight", ["#f6f7f9", "#ffffff", "#2563eb"]],
+  ];
+  const dark = window.matchMedia("(prefers-color-scheme: light)");
+  function applyTheme() {
+    const pick = store.get("wm-theme") || "auto";
+    const t = pick === "auto" ? (dark.matches ? "day" : "night") : pick;
+    document.documentElement.dataset.theme = t;
+    if (store.get("wm-cb")) document.documentElement.dataset.cb = "1"; else delete document.documentElement.dataset.cb;
+    const meta = document.querySelector('meta[name="theme-color"]');
+    readPalette();
+    if (meta) meta.content = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+    const pop = $("#theme-pop");
+    if (pop) {
+      pop.querySelectorAll("[data-theme-pick]").forEach((b) => b.setAttribute("aria-checked", b.dataset.themePick === pick));
+      $("#cb-toggle").checked = !!store.get("wm-cb");
+    }
+  }
+  function toggleThemes(open) {
+    const pop = $("#theme-pop"), btn = $("#theme-btn");
+    const show = open ?? pop.hidden;
+    pop.hidden = !show; btn.setAttribute("aria-expanded", show);
+    if (show) requestAnimationFrame(() => pop.classList.add("in")); else pop.classList.remove("in");
+  }
+  $("#theme-list").innerHTML = THEMES.map(([id, name, sw]) => `<button role="radio" data-theme-pick="${id}" class="tp-item"><span class="sw" style="--a:${sw[0]};--b:${sw[1]};--c:${sw[2]}"></span>${name}</button>`).join("");
+  $("#theme-btn").onclick = (e) => { e.stopPropagation(); toggleThemes(); };
+  $("#theme-pop").onclick = (e) => {
+    e.stopPropagation();
+    const b = e.target.closest("[data-theme-pick]");
+    if (!b) return;
+    store.set("wm-theme", b.dataset.themePick);
+    const go = () => { applyTheme(); render(); };
+    if (document.startViewTransition && !REDUCED) document.startViewTransition(go); else go();
+  };
+  $("#cb-toggle").onchange = (e) => { store.set("wm-cb", e.target.checked); applyTheme(); render(); };
+  document.addEventListener("click", (e) => { if (!$("#theme-pop").hidden && !e.target.closest("#theme-pop")) toggleThemes(false); });
+  dark.addEventListener("change", () => { if ((store.get("wm-theme") || "auto") === "auto") { applyTheme(); render(); } });
+  applyTheme();
+
   renderChips();
   $("#regions").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; state.region = b.dataset.r; renderChips(); renderMain(); };
   $("#views").onclick = (e) => { const b = e.target.closest("button"); if (b) setView(b.dataset.view); };
@@ -580,14 +704,52 @@
     const a = e.target.closest("[data-sym]");
     if (!a || e.ctrlKey || e.metaKey || e.shiftKey) return; // modifier-click still opens Yahoo
     e.preventDefault();
-    openChart(a.dataset.sym);
+    openChart(a.dataset.sym, e.detail === 0);
   });
   $("#m-ranges").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; modal.range = b.dataset.r; drawModal(); };
   $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal" || e.target.closest("#m-close")) closeChart(); });
   document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && $("#theme-pop") && !$("#theme-pop").hidden) return toggleThemes(false);
     if (e.key === "Escape" && modal.sym) return closeChart();
+    if (modal.sym && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      const i = RANGES.findIndex((r) => r[0] === modal.range) + (e.key === "ArrowRight" ? 1 : -1);
+      if (i >= 0 && i < RANGES.length) { e.preventDefault(); modal.range = RANGES[i][0]; drawModal(); }
+      return;
+    }
     if (e.key === "/" && document.activeElement.tagName !== "INPUT") { e.preventDefault(); $("#search").focus(); }
   });
+
+  // load a chart while the pointer rests on its row, so the click opens instantly
+  if (window.matchMedia("(hover: hover)").matches) {
+    let ht;
+    document.addEventListener("pointerover", (e) => {
+      const a = e.target.closest("[data-sym]");
+      clearTimeout(ht);
+      if (a) ht = setTimeout(() => getChart(a.dataset.sym, modal.range).catch(() => {}), 120);
+    });
+  }
+
+  // phones: drag the sheet down to close it
+  (() => {
+    const box = $(".mbox");
+    let y0 = null, dy = 0;
+    box.addEventListener("touchstart", (e) => {
+      const fromTop = e.touches[0].clientY - box.getBoundingClientRect().top;
+      if (box.scrollTop > 0 || fromTop > 90 || window.innerWidth > 760) return;
+      y0 = e.touches[0].clientY; dy = 0; box.style.transition = "none";
+    }, { passive: true });
+    box.addEventListener("touchmove", (e) => {
+      if (y0 == null) return;
+      dy = Math.max(0, e.touches[0].clientY - y0);
+      box.style.transform = `translateY(${dy}px)`;
+    }, { passive: true });
+    box.addEventListener("touchend", () => {
+      if (y0 == null) return;
+      box.style.transition = ""; box.style.transform = "";
+      if (dy > 90) closeChart();
+      y0 = null;
+    });
+  })();
   let rz;
   window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => { moveInk(); if (state.view === "map") renderMain(); if (modal.sym) drawModal(); }, 200); });
 
@@ -601,5 +763,5 @@
   if (document.fonts) document.fonts.ready.then(moveInk);
   load();
   setInterval(load, REFRESH_MS);
-  setInterval(() => { renderHero(); if (state.view === "map") renderTimeline($("#timeline")); }, 30_000);
+  setInterval(() => { renderHero(); patchStatus(); if (state.view === "map") renderTimeline($("#timeline")); }, 30_000);
 })();
