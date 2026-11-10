@@ -4,7 +4,7 @@
   const REGIONS = ["All", "Americas", "Europe", "Middle East & Africa", "Asia-Pacific"];
   const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  const state = { quotes: {}, prev: {}, region: "All", view: "cards", q: "", openOnly: false, sort: { key: "changePct", dir: -1 }, stockSort: { key: "changePct", dir: -1 }, fetchedAt: null, mock: false, error: null, hadData: false, stale: false, fund: {}, fundT: {}, stockMkt: "us", stocksSort: { key: "marketCap", dir: -1 } };
+  const state = { quotes: {}, prev: {}, region: "All", view: "cards", q: "", openOnly: false, sort: { key: "changePct", dir: -1 }, stockSort: { key: "changePct", dir: -1 }, fetchedAt: null, mock: false, error: null, hadData: false, stale: false, fund: {}, fundT: {}, stockMkt: "us", stocksSort: { key: "marketCap", dir: -1 }, calKind: "all", calDays: 45 };
   const store = { get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
   // last prices seen, so a return visit paints instantly
   const cached = store.get("wm-quotes");
@@ -35,6 +35,9 @@
   SM.forEach((m) => m.stocks.forEach(([s, n, sec]) => { STOCK_SET.add(s); NAMES[s] = NAMES[s] || { name: n, sub: `${m.flag} ${sec}` }; }));
   symbols.add("DKK=X"); // so European market caps can be compared in dollars
   const MAC = window.MACRO || {};
+  // the visitor's watchlist: [{ s: symbol, n: name, sub }], kept in this browser
+  const watch = (store.get("wm-watch") || []).filter((w) => w && w.s).slice(0, 30);
+  watch.forEach((w) => { NAMES[w.s] = NAMES[w.s] || { name: w.n || w.s, sub: w.sub || "" }; if (w.stock) STOCK_SET.add(w.s); });
 
   // ── helpers ──────────────────────────────────────────────────────────────
   const $ = (s) => document.querySelector(s);
@@ -109,22 +112,46 @@
     const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mm = m % 60;
     return d ? `${d}d ${h}h` : h ? `${h}h ${mm}m` : `${mm}m`;
   }
+  // exchange holidays and early closes (data/holidays.js); beyond a market's `through` date, regular hours apply
+  const HOL = window.HOLIDAYS || {};
+  const ymd = (y, m, d) => new Date(Date.UTC(y, m - 1, d)).toISOString().slice(0, 10);
+  function holidayOn(c, date) {
+    const h = HOL[c.id];
+    if (!h || date > h.through) return null;
+    const v = h.days[date];
+    return !v ? null : Array.isArray(v) ? { early: toMin(v[0]), at: v[0], name: v[1] } : { name: v };
+  }
+  // today's sessions in local minutes, cut short on an early-close day
+  function sessionsOn(c, hol) {
+    let ses = c.sessions.map(([a, b]) => [toMin(a), toMin(b)]);
+    if (hol && hol.early != null) ses = ses.filter(([a]) => a < hol.early).map(([a, b]) => [a, Math.min(b, hol.early)]);
+    return ses;
+  }
   function status(c) {
-    const { wd, min, label } = localParts(c.tz);
-    const ses = c.sessions.map(([a, b]) => [toMin(a), toMin(b)]);
-    if (c.days.includes(wd)) {
-      for (const [a, b] of ses) if (min >= a && min < b) return { kind: "open", text: "Open", mins: b - min, sub: "Closes in " + dur(b - min), label };
+    const { wd, min, label, y, mo, d } = localParts(c.tz);
+    const hol = holidayOn(c, ymd(y, mo, d));
+    const shut = hol && hol.early == null && c.days.includes(wd);
+    const ses = sessionsOn(c, hol);
+    if (c.days.includes(wd) && !shut && ses.length) {
+      for (const [a, b] of ses) if (min >= a && min < b) {
+        const early = hol && hol.early != null;
+        return { kind: "open", text: "Open", mins: b - min, sub: early ? `Closes early at ${hol.at} for ${hol.name}, in ${dur(b - min)}` : "Closes in " + dur(b - min), label, early: early ? hol.name : null };
+      }
       if (min >= ses[0][0] && min < ses[ses.length - 1][1]) {
         const next = ses.find(([a]) => a > min);
         return { kind: "lunch", text: "Lunch break", mins: next[0] - min, sub: "Reopens in " + dur(next[0] - min), label };
       }
     }
+    // next opening, skipping weekends and full-day holidays
     let best = Infinity;
-    for (let d = 0; d < 8; d++) {
-      if (!c.days.includes((wd + d) % 7)) continue;
-      const m = d * 1440 + ses[0][0] - min;
+    for (let k = 0; k < 12; k++) {
+      if (!c.days.includes((wd + k) % 7)) continue;
+      const h2 = holidayOn(c, ymd(y, mo, d + k));
+      if (h2 && h2.early == null) continue;
+      const m = k * 1440 + toMin(c.sessions[0][0]) - min;
       if (m > 0) { best = m; break; }
     }
+    if (shut) return { kind: "closed", text: "Holiday", holiday: hol.name, mins: best, sub: `Closed for ${hol.name}. Opens in ${dur(best)}`, label };
     return { kind: "closed", text: "Closed", mins: best, sub: "Opens in " + dur(best), label };
   }
   const isLive = (c) => ["open", "lunch"].includes(status(c).kind);
@@ -134,13 +161,22 @@
     const btn = $("#refresh");
     btn.classList.add("spin");
     try {
-      const r = await fetch("/api/quotes?symbols=" + encodeURIComponent([...symbols, ...extraSyms()].join(",")));
+      const want = [...new Set([...symbols, ...extraSyms(), ...watch.map((w) => w.s)])].slice(0, 200);
+      const r = await fetch("/api/quotes?symbols=" + encodeURIComponent(want.join(",")));
       if (!r.ok) throw new Error("the price service answered " + r.status);
       const j = await r.json();
       state.prev = Object.fromEntries(Object.entries(state.quotes).map(([k, v]) => [k, v && v.price]));
-      // keep the last good value for any symbol that failed this round
+      // keep the last good value for any symbol that failed this round, and count the failures
       const fresh = j.quotes || {};
-      for (const k in fresh) if (fresh[k] && fresh[k].price == null && state.quotes[k] && state.quotes[k].price != null) fresh[k] = state.quotes[k];
+      let failed = 0;
+      for (const k in fresh) if (fresh[k] && fresh[k].price == null) {
+        failed++;
+        if (state.quotes[k] && state.quotes[k].price != null) fresh[k] = state.quotes[k];
+      }
+      state.failed = failed;
+      state.asked = want.length;
+      // anything loaded on the side (another market's stocks) stays until the next refresh replaces it
+      for (const k in state.quotes) if (!fresh[k]) fresh[k] = state.quotes[k];
       state.quotes = fresh;
       state.fetchedAt = j.fetchedAt || Date.now();
       state.mock = !!j.mock;
@@ -175,7 +211,10 @@
   const fundBusy = new Set();
   let fundErr = null;
   function ensureFund(list) {
-    const need = list.filter((s) => !fundBusy.has(s) && !(state.fundT[s] && Date.now() - state.fundT[s] < 3600e3));
+    const all = list.filter((s) => !fundBusy.has(s) && !(state.fundT[s] && Date.now() - state.fundT[s] < 3600e3));
+    for (let i = 0; i < all.length; i += 50) fundBatch(all.slice(i, i + 50)); // the service takes up to 60 at a time
+  }
+  function fundBatch(need) {
     if (!need.length) return;
     need.forEach((s) => fundBusy.add(s));
     fetch("/api/fundamentals?symbols=" + encodeURIComponent(need.join(","))).then(async (r) => {
@@ -190,7 +229,7 @@
       need.forEach((s) => (state.fundT[s] = Date.now() - 3300e3)); // try again in about 5 minutes
     }).finally(() => {
       need.forEach((s) => fundBusy.delete(s));
-      if (["stocks", "india"].includes(state.view)) renderMain();
+      if (["stocks", "india", "cal"].includes(state.view)) renderMain();
     });
   }
   const fundDetail = {};
@@ -254,7 +293,13 @@
     if (closing) parts.push(`${CITY[closing.id]} ${closing.s.kind === "lunch" ? "reopens after lunch in" : "closes in"} ${dur(closing.s.mins)}.`);
     if (opening) parts.push(`${CITY[opening.id]} opens in ${dur(opening.s.mins)}.`);
     const ind = status(byId.in);
-    if (![closing, opening].some((m) => m && m.id === "in")) parts.push(ind.kind === "closed" ? `Indian markets open in ${dur(ind.mins)}.` : `Indian markets close in ${dur(ind.mins)}.`);
+    if (ind.holiday) parts.push(`Indian markets are closed today for ${ind.holiday} and open in ${dur(ind.mins)}.`);
+    else if (![closing, opening].some((m) => m && m.id === "in")) parts.push(ind.kind === "closed" ? `Indian markets open in ${dur(ind.mins)}.` : `Indian markets close in ${dur(ind.mins)}.`);
+    // other big markets shut for a holiday today
+    const hols = majors.filter((m) => m.id !== "in" && m.s.holiday).map((m) => `${CITY[m.id]} (${m.s.holiday})`);
+    if (hols.length) parts.push(`Closed today for holidays: ${listJoin(hols)}.`);
+    const early = majors.filter((m) => m.s.early).map((m) => CITY[m.id]);
+    if (early.length) parts.push(`${listJoin(early)} ${early.length > 1 ? "close" : "closes"} early today.`);
     $("#headline").textContent = h;
     $("#subline").textContent = parts.join(" ");
     renderRibbon();
@@ -318,10 +363,56 @@
     ).join("")}</div>`).join("");
   }
 
+  // ── watchlist ────────────────────────────────────────────────────────────
+  function renderWatch() {
+    const el = $("#watch");
+    if (!el) return;
+    el.hidden = !watch.length;
+    if (!watch.length) { el.innerHTML = ""; return; }
+    el.innerHTML = `<div class="watch-h"><h2>Your watchlist</h2><p class="muted">Tap the star on any chart to add or remove.</p></div>
+      <div class="watch-row">${watch.map((w) => `<a class="wcard" href="${yurl(w.s)}" data-sym="${esc(w.s)}">
+        <span class="wc-n">${esc(w.n || w.s)}</span><span class="wc-s">${esc(tickerOf(w.s))}</span>
+        <span class="wc-row"><span class="wc-p">${px(w.s)}</span>${chipS(w.s)}</span>${sparkS(w.s, 150, 28)}</a>`).join("")}</div>`;
+  }
+  const isWatched = (s) => watch.some((w) => w.s === s);
+  function toggleWatch(s) {
+    const i = watch.findIndex((w) => w.s === s);
+    if (i >= 0) { watch.splice(i, 1); toast(`Removed ${NAMES[s] ? NAMES[s].name : s} from your watchlist`); }
+    else {
+      if (watch.length >= 30) return toast("Your watchlist is full at 30. Remove one first.");
+      const nm = NAMES[s] || { name: s, sub: "" };
+      watch.push({ s, n: nm.name, sub: nm.sub, stock: STOCK_SET.has(s) || undefined });
+      toast(`Added ${nm.name} to your watchlist`);
+      if (!state.quotes[s]) quoteFor([s]).then(renderWatch);
+    }
+    store.set("wm-watch", watch);
+    renderWatch();
+    starBtn();
+  }
+  // one-off quotes for symbols outside the regular refresh (watchlist adds, searched stocks)
+  async function quoteFor(list) {
+    try {
+      const j = await fetch("/api/quotes?symbols=" + encodeURIComponent(list.join(","))).then((r) => r.json());
+      Object.assign(state.quotes, j.quotes || {});
+    } catch (e) { /* the next refresh will try again */ }
+  }
+  let toastT;
+  function toast(msg) {
+    let el = $("#toast");
+    if (!el) { el = document.createElement("div"); el.id = "toast"; el.className = "toast"; el.setAttribute("role", "status"); document.body.appendChild(el); }
+    el.textContent = msg; el.classList.add("in");
+    clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove("in"), 2600);
+  }
+
   function renderStatus() {
     const el = $("#status-line");
     if (state.error) { el.textContent = `Prices didn't load because ${state.error}. Retrying in a minute.`; el.classList.add("err"); }
     else if (state.stale) { el.textContent = `Showing prices from ${new Date(state.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. Updating…`; el.classList.remove("err"); }
+    else if (state.fetchedAt && state.failed > Math.max(5, (state.asked || 0) * 0.2)) {
+      // the price source is partly down: say so rather than quietly showing old numbers
+      el.textContent = `Updated ${new Date(state.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}, but ${state.failed} prices didn't update and show their last known value`;
+      el.classList.add("err");
+    }
     else if (state.fetchedAt) { el.textContent = `Updated ${new Date(state.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}, refreshes every minute`; el.classList.remove("err"); }
     $("#demo-banner").hidden = !state.mock;
   }
@@ -432,18 +523,21 @@
   function renderTimeline(el) {
     const now = new Date(), vo = -now.getTimezoneOffset(), nowMin = now.getHours() * 60 + now.getMinutes();
     const rows = M.map((c) => {
-      const off = tzOffsetMin(c.tz, now), today = c.days.includes(localParts(c.tz, now).wd), segs = [];
-      c.sessions.forEach(([a, b]) => {
-        const s = (toMin(a) - off + vo + 2880) % 1440, e = s + (toMin(b) - toMin(a));
+      const lp = localParts(c.tz, now), off = tzOffsetMin(c.tz, now), segs = [];
+      const hol = holidayOn(c, ymd(lp.y, lp.mo, lp.d));
+      const today = c.days.includes(lp.wd) && !(hol && hol.early == null);
+      sessionsOn(c, hol).forEach(([a, b]) => {
+        const s = (a - off + vo + 2880) % 1440, e = s + (b - a);
         if (e <= 1440) segs.push([s, e]); else { segs.push([s, 1440]); segs.push([0, e - 1440]); }
       });
-      return { c, segs, today, first: (toMin(c.sessions[0][0]) - off + vo + 2880) % 1440, st: status(c) };
+      const note = hol && hol.early == null && c.days.includes(lp.wd) ? `Closed for ${hol.name}` : !today ? "No session today" : hol ? `Early close, ${hol.name}` : "";
+      return { c, segs, today, note, first: (toMin(c.sessions[0][0]) - off + vo + 2880) % 1440, st: status(c) };
     }).sort((a, b) => a.first - b.first);
     el.innerHTML = `<div class="tl">
       <div class="tl-row tl-axis"><div class="tl-l"></div><div class="tl-track">${[0, 3, 6, 9, 12, 15, 18, 21, 24].map((h) => `<span style="left:${(h / 24) * 100}%">${String(h % 24).padStart(2, "0")}:00</span>`).join("")}</div></div>
       ${rows.map((r) => `<div class="tl-row"><div class="tl-l"><span class="flag">${r.c.flag}</span>${esc(r.c.name)}</div>
         <div class="tl-track">${r.segs.map(([s, e]) => `<div class="tl-bar ${r.st.kind === "open" ? "on" : ""} ${r.today ? "" : "off"}" style="left:${(s / 1440) * 100}%;width:${((e - s) / 1440) * 100}%" title="${esc(r.c.exchange)}, ${r.c.sessions.map((x) => x.join("–")).join(" and ")} local time"></div>`).join("")}
-        ${r.today ? "" : '<span class="tl-note">No session today</span>'}</div></div>`).join("")}
+        ${r.note ? `<span class="tl-note">${esc(r.note)}</span>` : ""}</div></div>`).join("")}
       <div class="tl-now" style="--x:${(nowMin / 1440).toFixed(4)}"></div></div>`;
   }
 
@@ -462,7 +556,7 @@
     ensureFund(IN.stocks.map((x) => x[0]));
     const s = status(byId.in);
     el.innerHTML = `
-      <section class="in-hero"><div><h2>India today</h2><p class="muted">NSE and BSE are <b class="${s.kind}">${s.text.toLowerCase()}</b>. ${s.sub}.</p></div>
+      <section class="in-hero"><div><h2>India today</h2><p class="muted">${s.holiday ? `NSE and BSE are <b class="closed">closed today</b> for ${esc(s.holiday)}. They open in ${dur(s.mins)}.` : `NSE and BSE are <b class="${s.kind}">${s.text.toLowerCase()}</b>. ${s.sub}.`}</p></div>
         <div class="breadth" id="breadth" title="How many of the 30 largest stocks are up or down today">${breadthHTML()}</div></section>
       <div class="itiles">${head}</div>
       ${econHTML("in")}
@@ -532,12 +626,78 @@
     });
   }
 
+
+  // ── calendar: rate decisions, inflation releases, company results, market holidays ──
+  const CAL_KINDS = [["all", "Everything"], ["rate", "Interest rates"], ["cpi", "Inflation"], ["results", "Company results"], ["holiday", "Market holidays"]];
+  const CAL_LABEL = { rate: "Interest rates", cpi: "Inflation", results: "Results", holiday: "Holiday" };
+  // a wall-clock time in some time zone, as a moment
+  function zonedEpoch(date, hhmm, tz) {
+    const [y, m, d] = date.split("-").map(Number), [h, mi] = (hhmm || "12:00").split(":").map(Number);
+    let t = Date.UTC(y, m - 1, d, h, mi);
+    for (let k = 0; k < 2; k++) t = Date.UTC(y, m - 1, d, h, mi) - tzOffsetMin(tz, new Date(t)) * 60000;
+    return t;
+  }
+  const localDay = (t) => new Date(t).toLocaleDateString("en-CA"); // YYYY-MM-DD in the viewer's zone
+  function calEvents() {
+    const ev = [];
+    (window.CALENDAR || []).forEach(([date, time, tz, kind, title, flag]) => {
+      const t = zonedEpoch(date, time, tz);
+      ev.push({ kind, title, flag, t, day: time ? localDay(t) : date, timed: !!time, sub: time ? "" : "Announced when the meeting ends, usually around midday in Tokyo" });
+    });
+    // full-day exchange closures, one row per date
+    const byDate = {};
+    M.forEach((c) => {
+      const h = HOL[c.id];
+      if (h) Object.entries(h.days).forEach(([date, v]) => { if (!Array.isArray(v)) (byDate[date] = byDate[date] || []).push({ c, why: v }); });
+    });
+    Object.entries(byDate).forEach(([date, list]) => {
+      const one = list.length === 1 ? list[0] : null;
+      ev.push({ kind: "holiday", day: date, t: zonedEpoch(date, "00:00", "UTC"), timed: false,
+        title: one ? `${one.c.name} closed` : `${list.length} markets closed`, flag: one ? one.c.flag : "",
+        sub: one ? one.why : list.map((x) => `${x.c.flag} ${x.c.name} (${x.why})`).join(", ") });
+    });
+    // company results, from the fundamentals feed
+    STOCK_SET.forEach((s) => {
+      const f = state.fund[s];
+      if (!f || !f.results) return;
+      const t = f.results * 1000, flag = ((NAMES[s] || {}).sub || "").match(FLAG);
+      ev.push({ kind: "results", title: `${nameOf(s)} results`, sub: f.resultsEstimate ? "Expected around this date" : "", flag: flag ? flag[1] : "", sym: s, day: localDay(t), t, timed: false });
+    });
+    return ev;
+  }
+  function renderCal(el) {
+    ensureFund([...STOCK_SET]);
+    const today = localDay(Date.now()), tmr = localDay(Date.now() + 864e5);
+    const until = localDay(Date.now() + state.calDays * 864e5);
+    const ev = calEvents().filter((e) => e.day >= today && e.day <= until && (state.calKind === "all" || e.kind === state.calKind))
+      .sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : a.t - b.t));
+    const days = [];
+    ev.forEach((e) => { if (!days.length || days[days.length - 1].day !== e.day) days.push({ day: e.day, items: [] }); days[days.length - 1].items.push(e); });
+    const dayName = (d) => d === today ? "Today" : d === tmr ? "Tomorrow" : new Date(d + "T12:00:00").toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" });
+    const time = (e) => (e.timed ? new Date(e.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : e.kind === "holiday" ? "All day" : e.kind === "rate" ? "Midday JST" : "");
+    const item = (e) => {
+      const inner = `<span class="ev-t">${time(e)}</span><span class="ev-f">${e.flag}</span><span class="ev-b"><b>${esc(e.title)}</b>${e.sub ? `<small>${esc(e.sub)}</small>` : ""}</span><span class="ev-k k-${e.kind}">${CAL_LABEL[e.kind]}</span>`;
+      return e.sym ? `<li><a class="ev" href="${yurl(e.sym)}" data-sym="${esc(e.sym)}">${inner}</a></li>` : `<li><div class="ev">${inner}</div></li>`;
+    };
+    const busy = [...STOCK_SET].some((s) => fundBusy.has(s));
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone.replace(/_/g, " ");
+    el.innerHTML = `<section class="panel cal"><div class="panel-h"><div><h2>Coming up</h2><p class="muted">Interest rate decisions, inflation figures, results from the companies on this site, and exchange holidays. Times are in your time zone (${esc(zone)}).</p></div></div>
+      <div class="chips" id="cal-kinds" role="group" aria-label="Show">${CAL_KINDS.map(([k, l]) => `<button class="chip ${state.calKind === k ? "on" : ""}" data-ck="${k}" aria-pressed="${state.calKind === k}">${l}</button>`).join("")}</div>
+      ${days.length ? days.map((g) => `<h3 class="cal-day">${dayName(g.day)}</h3><ul class="evs">${g.items.map(item).join("")}</ul>`).join("") : `<div class="empty"><p>Nothing scheduled in the next ${state.calDays} days${state.calKind !== "all" ? " for this filter" : ""}.</p></div>`}
+      ${busy && state.calKind !== "rate" && state.calKind !== "cpi" && state.calKind !== "holiday" ? '<p class="note">Loading company results dates…</p>' : ""}
+      <div class="cal-more"><button class="btn" id="cal-more">Show ${state.calDays < 365 ? "the next " + Math.min(365, state.calDays * 2) + " days" : "less"}</button></div>
+      <p class="note">Central bank and inflation dates are the official schedules as of ${esc(window.CALENDAR_CHECKED || "")}; holidays as of ${esc(window.HOLIDAYS_CHECKED || "")}. Results dates come from Yahoo Finance and can move.</p></section>`;
+    el.querySelector("#cal-kinds").onclick = (e) => { const b = e.target.closest("[data-ck]"); if (b) { state.calKind = b.dataset.ck; renderCal(el); } };
+    el.querySelector("#cal-more").onclick = () => { state.calDays = state.calDays < 365 ? Math.min(365, state.calDays * 2) : 45; renderCal(el); };
+  }
+
   // ── main ─────────────────────────────────────────────────────────────────
   function renderMain() {
     const main = $("#main");
-    $("#filters").hidden = ["map", "india", "stocks"].includes(state.view);
+    $("#filters").hidden = ["map", "india", "stocks", "cal"].includes(state.view);
     if (state.view === "india") return renderIndia(main);
     if (state.view === "stocks") return renderStocks(main);
+    if (state.view === "cal") return renderCal(main);
     if (state.view === "map") return renderMap(main);
     const list = filtered();
     if (!list.length) {
@@ -635,8 +795,11 @@
   const RANGES = [["1d", "1D"], ["5d", "5D"], ["1mo", "1M"], ["6mo", "6M"], ["1y", "1Y"], ["5y", "5Y"]];
   const RANGE_WORD = { "1d": "Today", "5d": "5 days", "1mo": "1 month", "6mo": "6 months", "1y": "1 year", "5y": "5 years" };
   const chartCache = {};
-  const modal = { sym: null, range: "1mo", lastFocus: null };
-  function openChart(s, viaKeyboard) {
+  const modal = { sym: null, range: "1mo", lastFocus: null, cmp: null };
+  // chart overlays the visitor has switched on, remembered in this browser
+  const copts = Object.assign({ vol: true, ma50: true, ma200: true }, store.get("wm-copts") || {});
+  function openChart(s, viaKeyboard, keepCmp) {
+    if (modal.sym !== s && !keepCmp) modal.cmp = null;
     modal.sym = s; modal.lastFocus = document.activeElement;
     const m = $("#modal"); m.hidden = false; requestAnimationFrame(() => m.classList.add("in"));
     document.body.classList.add("locked");
@@ -646,9 +809,22 @@
   function closeChart() {
     const m = $("#modal"); m.classList.remove("in");
     setTimeout(() => { m.hidden = true; }, REDUCED ? 0 : 220);
-    document.body.classList.remove("locked"); modal.sym = null;
+    document.body.classList.remove("locked"); modal.sym = null; modal.cmp = null;
+    writeHash();
     if (modal.lastFocus) modal.lastFocus.focus({ preventScroll: true });
   }
+  // the address bar always describes what's on screen, so it can be shared as is
+  function hashFor() {
+    const parts = [];
+    if (state.view !== "cards") parts.push(state.view);
+    if (modal.sym) {
+      parts.push("chart=" + encodeURIComponent(modal.sym));
+      if (modal.range !== "1mo") parts.push("range=" + modal.range);
+      if (modal.cmp) parts.push("vs=" + encodeURIComponent(modal.cmp));
+    }
+    return parts.length ? "#" + parts.join("&") : location.pathname + location.search;
+  }
+  const writeHash = () => { try { history.replaceState(null, "", hashFor()); } catch (e) {} };
   // promises are cached too, so a hover-prefetch and the click share one request
   function getChart(s, range) {
     const key = s + "|" + range, hit = chartCache[key];
@@ -666,22 +842,47 @@
     const q = state.quotes[modal.sym] || {};
     $("#m-price").innerHTML = `<span class="m-p">${fmt(q.price)}</span>${chip(q.changePct)}<span class="muted">today</span>`;
   }
-  async function drawModal() {
-    const s = modal.sym, range = modal.range, nm = NAMES[s] || { name: s, sub: "" };
+  function starBtn() {
+    const b = $("#m-star");
+    if (!b || !modal.sym) return;
+    const on = isWatched(modal.sym);
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", on);
+    b.setAttribute("aria-label", on ? "Remove from watchlist" : "Add to watchlist");
+    b.title = on ? "Remove from watchlist (S)" : "Add to watchlist (S)";
+  }
+  const nameOf = (s) => (NAMES[s] ? NAMES[s].name : s);
+  function drawTitle(s) {
+    const nm = NAMES[s] || { name: s, sub: "" };
     $("#m-title").innerHTML = `<h2>${esc(nm.name)}</h2><p class="muted">${esc(nm.sub)}</p>`;
+  }
+  const quoteBusy = new Set();
+  async function drawModal() {
+    const s = modal.sym, range = modal.range, cmp = modal.cmp;
+    drawTitle(s);
     $("#m-ranges").innerHTML = RANGES.map(([k, l]) => `<button data-r="${k}" role="tab" aria-selected="${k === range}" class="${k === range ? "on" : ""}">${l}</button>`).join("");
     $("#m-yahoo").href = yurl(s);
-    modalPrice();
-    drawFund(s);
+    starBtn(); modalPrice(); drawFund(s); writeHash();
+    // symbols reached by search or a shared link may not be in the regular price refresh
+    if (!state.quotes[s] && !quoteBusy.has(s)) {
+      quoteBusy.add(s);
+      quoteFor([s]).then(() => { quoteBusy.delete(s); if (modal.sym === s) modalPrice(); });
+    }
     const p = getChart(s, range);
+    const pc = cmp ? getChart(cmp, range).catch((e) => ({ error: e.message })) : Promise.resolve(null);
+    const both = Promise.all([p, pc]);
     // only show the placeholder if the data isn't already here
-    let settled = false; p.then(() => { settled = true; }, () => { settled = true; });
-    await Promise.resolve();
+    let settled = false; both.then(() => { settled = true; }, () => { settled = true; });
+    await Promise.resolve(); await Promise.resolve();
     if (!settled) { $("#m-chart").innerHTML = '<div class="chart-sk"></div>'; $("#m-stats").innerHTML = ""; }
     try {
-      const d = await p;
-      if (modal.sym !== s || modal.range !== range) return;
-      drawSvgChart(d, range);
+      const [d, dc] = await both;
+      if (modal.sym !== s || modal.range !== range || modal.cmp !== cmp) return;
+      if (d.name && (!NAMES[s] || NAMES[s].name === s)) { NAMES[s] = { name: d.name, sub: d.exchange || "" }; drawTitle(s); }
+      if (d.type === "EQUITY" && !STOCK_SET.has(s)) { STOCK_SET.add(s); drawFund(s); }
+      if (dc && dc.name && !NAMES[cmp]) NAMES[cmp] = { name: dc.name, sub: dc.exchange || "" };
+      if (dc && !dc.error) drawCompare(d, dc, range); else drawSvgChart(d, range);
+      drawTools(d, dc);
       const rc = d.price != null && d.prevClose ? ((d.price - d.prevClose) / d.prevClose) * 100 : null;
       const rng = (lo, hi, v) => (lo != null && hi != null && v != null && hi > lo)
         ? `<div class="rbar"><i style="left:${Math.max(0, Math.min(100, ((v - lo) / (hi - lo)) * 100))}%"></i></div><div class="rlab"><span>${fmt(lo)}</span><span>${fmt(hi)}</span></div>` : '<p class="muted">Not available</p>';
@@ -692,7 +893,28 @@
         <div><dt>Below 52-week high</dt><dd class="big ${cls(d.high52 ? d.price - d.high52 : null)}">${d.high52 ? pct(((d.price - d.high52) / d.high52) * 100) : "—"}</dd></div>`;
     } catch (e) {
       $("#m-chart").innerHTML = `<div class="empty">The chart didn't load (${esc(e.message)}). Pick a range to try again.</div>`;
+      $("#m-tools").innerHTML = "";
     }
+  }
+  // overlay switches and the comparison picker under the chart
+  const CMP_PICKS = ["^GSPC", "^NSEI", "^IXIC", "^FTSE", "^N225", "^HSI", "GC=F", "BTC-USD"];
+  function drawTools(d, dc) {
+    const box = $("#m-tools");
+    const hasVol = (d.points || []).some((p) => p[2] > 0);
+    const tg = (k, label, cls2) => `<button class="tgl ${cls2}" data-opt="${k}" aria-pressed="${!!copts[k]}"><i></i>${label}</button>`;
+    const overlays = modal.cmp ? "" : (hasVol ? tg("vol", "Volume", "t-vol") : "") + (d.ma50 ? tg("ma50", "50-day average", "t-ma50") : "") + (d.ma200 ? tg("ma200", "200-day average", "t-ma200") : "");
+    const cmpPart = modal.cmp
+      ? `<span class="cmp-on">Compared with ${esc(nameOf(modal.cmp))}${dc && dc.error ? ` (didn't load: ${esc(dc.error)})` : ""}<button data-cmp-clear aria-label="Stop comparing">×</button></span>`
+      : `<button class="tgl t-cmp" data-cmp-open aria-expanded="false">Compare with…</button>`;
+    box.innerHTML = `<div class="tools-row">${overlays}${cmpPart}</div><div class="cmp-pick" id="cmp-pick" hidden>
+      <input id="cmp-q" type="search" placeholder="Type an index, stock or currency" autocomplete="off" aria-label="Find something to compare with" />
+      <div id="cmp-list" class="cmp-list">${cmpList("")}</div></div>`;
+  }
+  function cmpList(q) {
+    let items;
+    if (!q.trim()) items = CMP_PICKS.filter((s) => s !== modal.sym).map((s) => ({ s, name: nameOf(s) }));
+    else items = searchHits(q).map((it) => (it.k === "c" ? { s: it.c.indices[0][0], name: `${it.c.indices[0][1]} (${it.c.name})` } : { s: it.s, name: it.name })).filter((x) => x.s !== modal.sym).slice(0, 6);
+    return items.length ? items.map((x) => `<button class="chip" data-cmp="${esc(x.s)}">${esc(x.name)}</button>`).join("") : '<p class="muted">Nothing here matches. Try an index name like "Nikkei".</p>';
   }
   // company fundamentals under the chart (stocks only; indices and currencies have none)
   async function drawFund(s) {
@@ -728,26 +950,9 @@
       </div><p class="note">From Yahoo Finance. Company financials are reported in ${esc(rc)}.</p>`;
   }
 
-  function drawSvgChart(d, range) {
-    const box = $("#m-chart"), pts = d.points || [];
-    if (pts.length < 2) { box.innerHTML = '<div class="empty">Yahoo Finance has no history for this range. Try a longer one.</div>'; return; }
-    const W = box.clientWidth || 760, H = Math.min(320, Math.max(220, Math.round(W * 0.42))), L = 4, R = 58, T = 14, B = 26;
-    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
-    let lo = Math.min(...ys), hi = Math.max(...ys);
-    if (range === "1d" && d.prevClose) { lo = Math.min(lo, d.prevClose); hi = Math.max(hi, d.prevClose); }
-    const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
-    const X = (i) => L + (i / (pts.length - 1)) * (W - L - R);
-    const Y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
-    const base = range === "1d" && d.prevClose ? d.prevClose : ys[0];
-    const col = ys[ys.length - 1] >= base ? "var(--up)" : "var(--down)";
-    const line = pts.map((p, i) => (i ? "L" : "M") + X(i).toFixed(1) + " " + Y(p[1]).toFixed(1)).join("");
-    const area = line + `L${X(pts.length - 1).toFixed(1)} ${H - B}L${X(0).toFixed(1)} ${H - B}Z`;
-    const nice = (n) => { const e = Math.pow(10, Math.floor(Math.log10(n))), f = n / e; return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * e; };
-    const step = nice((hi - lo) / 4);
-    let grid = "";
-    for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) grid += `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" class="gl"/><text x="${W - R + 8}" y="${Y(v) + 4}" class="gt">${fmt(v, step < 1 ? 2 : 0)}</text>`;
-    const tz = d.tz || "UTC";
-    const fmtX = (t) => {
+  const niceStep = (n) => { const e = Math.pow(10, Math.floor(Math.log10(n))), f = n / e; return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * e; };
+  function timeFmt(range, tz) {
+    return (t) => {
       const dt = new Date(t * 1000);
       if (range === "1d") return dt.toLocaleTimeString("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit" });
       if (range === "5d") return dt.toLocaleDateString("en-GB", { timeZone: tz, weekday: "short" });
@@ -755,43 +960,134 @@
       if (range === "1y") return dt.toLocaleDateString("en-GB", { timeZone: tz, month: "short", year: "2-digit" });
       return dt.toLocaleDateString("en-GB", { timeZone: tz, day: "numeric", month: "short" });
     };
-    let xl = "";
-    const nT = Math.min(W < 500 ? 4 : 6, pts.length);
-    for (let k = 0; k < nT; k++) { const i = Math.round((k / (nT - 1)) * (pts.length - 1)); xl += `<text x="${X(i)}" y="${H - 6}" class="gt" text-anchor="${k === 0 ? "start" : k === nT - 1 ? "end" : "middle"}">${fmtX(xs[i])}</text>`; }
-    const prev = range === "1d" && d.prevClose ? `<line x1="${L}" x2="${W - R}" y1="${Y(d.prevClose)}" y2="${Y(d.prevClose)}" class="prev"/><text x="${L + 4}" y="${Y(d.prevClose) - 6}" class="gt">Yesterday's close</text>` : "";
-    box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" id="m-svg" role="img" aria-label="Price chart">
-      <defs><linearGradient id="gfill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".3"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
-      ${grid}${prev}<path d="${area}" fill="url(#gfill)" class="area"/><path d="${line}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" class="line" pathLength="1"/>${xl}
-      <g id="hov" visibility="hidden"><line id="hx" y1="${T}" y2="${H - B}" class="cross"/><circle id="hc" r="5" fill="${col}" stroke="var(--panel)" stroke-width="2.5"/></g>
-      <rect x="${L}" y="0" width="${W - L - R}" height="${H}" fill="transparent" id="hit"/></svg><div id="m-tip" class="tip" hidden></div>`;
-    const svg = $("#m-svg"), hov = $("#hov"), tip = $("#m-tip");
+  }
+  const whenFmt = (t, range, tz) => {
+    const intraday = range === "1d" || range === "5d";
+    return new Date(t * 1000).toLocaleString("en-GB", { timeZone: tz, day: "numeric", month: "short", year: intraday ? undefined : "numeric", hour: intraday ? "2-digit" : undefined, minute: intraday ? "2-digit" : undefined });
+  };
+  const volFmt = (v) => (v >= 1e9 ? (v / 1e9).toFixed(2) + "B" : v >= 1e6 ? (v / 1e6).toFixed(1) + "M" : v >= 1e3 ? Math.round(v / 1e3) + "K" : String(v));
+  // pointer and touch tracking shared by both chart kinds
+  function hoverize(W, onMove) {
+    const svg = $("#m-svg"), hit = $("#hit"), hov = $("#hov"), tip = $("#m-tip");
     const move = (clientX) => {
       const r = svg.getBoundingClientRect();
-      const x = ((clientX - r.left) / r.width) * W;
-      const i = Math.max(0, Math.min(pts.length - 1, Math.round(((x - L) / (W - L - R)) * (pts.length - 1))));
       hov.setAttribute("visibility", "visible");
-      $("#hx").setAttribute("x1", X(i)); $("#hx").setAttribute("x2", X(i));
-      $("#hc").setAttribute("cx", X(i)); $("#hc").setAttribute("cy", Y(ys[i]));
-      const ch = ((ys[i] - base) / base) * 100;
-      const intraday = range === "1d" || range === "5d";
-      const when = new Date(xs[i] * 1000).toLocaleString("en-GB", { timeZone: tz, day: "numeric", month: "short", year: intraday ? undefined : "numeric", hour: intraday ? "2-digit" : undefined, minute: intraday ? "2-digit" : undefined });
       tip.hidden = false;
-      tip.innerHTML = `<b>${fmt(ys[i])}</b> <span class="${cls(ch)}">${pct(ch)}</span><span class="muted">${when}</span>`;
-      const pxl = (X(i) / W) * r.width;
-      tip.style.left = Math.max(0, Math.min(pxl - 70, r.width - 160)) + "px";
-      tip.style.top = Math.max(0, (Y(ys[i]) / H) * r.height - 66) + "px";
+      onMove(((clientX - r.left) / r.width) * W, r, tip);
     };
-    const hit = $("#hit");
     hit.addEventListener("mousemove", (e) => move(e.clientX));
     hit.addEventListener("touchmove", (e) => { move(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
     const hide = () => { hov.setAttribute("visibility", "hidden"); tip.hidden = true; };
     hit.addEventListener("mouseleave", hide); hit.addEventListener("touchend", hide);
   }
+  const placeTip = (tip, r, W, H, x, y) => {
+    tip.style.left = Math.max(0, Math.min((x / W) * r.width - 70, r.width - 180)) + "px";
+    tip.style.top = Math.max(0, (y / H) * r.height - 76) + "px";
+  };
+
+  function drawSvgChart(d, range) {
+    const box = $("#m-chart"), pts = d.points || [];
+    if (pts.length < 2) { box.innerHTML = '<div class="empty">Yahoo Finance has no history for this range. Try a longer one.</div>'; return; }
+    const W = box.clientWidth || 760, H = Math.min(340, Math.max(230, Math.round(W * 0.44))), L = 4, R = 58, T = 14, B = 26;
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]), vs = pts.map((p) => p[2] || 0);
+    const showVol = copts.vol && vs.some((v) => v > 0);
+    const m50 = copts.ma50 && d.ma50 ? d.ma50 : null, m200 = copts.ma200 && d.ma200 ? d.ma200 : null;
+    const VH = showVol ? Math.round((H - T - B) * 0.2) : 0, PB = H - B - (showVol ? VH + 8 : 0); // price area bottom
+    const inView = [...ys, ...(m50 || []).filter((v) => v != null), ...(m200 || []).filter((v) => v != null)];
+    let lo = Math.min(...inView), hi = Math.max(...inView);
+    if (range === "1d" && d.prevClose) { lo = Math.min(lo, d.prevClose); hi = Math.max(hi, d.prevClose); }
+    const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
+    const X = (i) => L + (i / (pts.length - 1)) * (W - L - R);
+    const Y = (v) => T + (1 - (v - lo) / (hi - lo)) * (PB - T);
+    const base = range === "1d" && d.prevClose ? d.prevClose : ys[0];
+    const col = ys[ys.length - 1] >= base ? "var(--up)" : "var(--down)";
+    const line = pts.map((p, i) => (i ? "L" : "M") + X(i).toFixed(1) + " " + Y(p[1]).toFixed(1)).join("");
+    const area = line + `L${X(pts.length - 1).toFixed(1)} ${PB}L${X(0).toFixed(1)} ${PB}Z`;
+    const maPath = (arr) => { let s = "", pen = false; arr.forEach((v, i) => { if (v == null) { pen = false; return; } s += (pen ? "L" : "M") + X(i).toFixed(1) + " " + Y(v).toFixed(1); pen = true; }); return s; };
+    const step = niceStep((hi - lo) / 4);
+    let grid = "";
+    for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) grid += `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" class="gl"/><text x="${W - R + 8}" y="${Y(v) + 4}" class="gt">${fmt(v, step < 1 ? 2 : 0)}</text>`;
+    let vol = "";
+    if (showVol) {
+      const maxV = Math.max(...vs) || 1, bw = Math.max(1, ((W - L - R) / pts.length) * 0.72);
+      vs.forEach((v, i) => { if (!v) return; const h = (v / maxV) * VH; vol += `<rect x="${(X(i) - bw / 2).toFixed(1)}" y="${(H - B - h).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" class="${i && ys[i] < ys[i - 1] ? "vb dn" : "vb"}"/>`; });
+      vol += `<text x="${W - R + 8}" y="${H - B - VH + 10}" class="gt">Vol</text>`;
+    }
+    const tz = d.tz || "UTC", fmtX = timeFmt(range, tz);
+    let xl = "";
+    const nT = Math.min(W < 500 ? 4 : 6, pts.length);
+    for (let k = 0; k < nT; k++) { const i = Math.round((k / (nT - 1)) * (pts.length - 1)); xl += `<text x="${X(i)}" y="${H - 6}" class="gt" text-anchor="${k === 0 ? "start" : k === nT - 1 ? "end" : "middle"}">${fmtX(xs[i])}</text>`; }
+    const prev = range === "1d" && d.prevClose ? `<line x1="${L}" x2="${W - R}" y1="${Y(d.prevClose)}" y2="${Y(d.prevClose)}" class="prev"/><text x="${L + 4}" y="${Y(d.prevClose) - 6}" class="gt">Yesterday's close</text>` : "";
+    box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" id="m-svg" role="img" aria-label="Price chart of ${esc(nameOf(modal.sym))}">
+      <defs><linearGradient id="gfill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".3"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
+      ${grid}${prev}${vol}<path d="${area}" fill="url(#gfill)" class="area"/>
+      ${m200 ? `<path d="${maPath(m200)}" class="ma ma200"/>` : ""}${m50 ? `<path d="${maPath(m50)}" class="ma ma50"/>` : ""}
+      <path d="${line}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" class="line" pathLength="1"/>${xl}
+      <g id="hov" visibility="hidden"><line id="hx" y1="${T}" y2="${H - B}" class="cross"/><circle id="hc" r="5" fill="${col}" stroke="var(--panel)" stroke-width="2.5"/></g>
+      <rect x="${L}" y="0" width="${W - L - R}" height="${H}" fill="transparent" id="hit"/></svg><div id="m-tip" class="tip" hidden></div>`;
+    hoverize(W, (x, r, tip) => {
+      const i = Math.max(0, Math.min(pts.length - 1, Math.round(((x - L) / (W - L - R)) * (pts.length - 1))));
+      $("#hx").setAttribute("x1", X(i)); $("#hx").setAttribute("x2", X(i));
+      $("#hc").setAttribute("cx", X(i)); $("#hc").setAttribute("cy", Y(ys[i]));
+      const ch = ((ys[i] - base) / base) * 100;
+      const extra = [m50 && m50[i] != null ? `<span class="tip-ma ma50">50-day ${fmt(m50[i])}</span>` : "", m200 && m200[i] != null ? `<span class="tip-ma ma200">200-day ${fmt(m200[i])}</span>` : "", showVol && vs[i] ? `<span class="muted">Volume ${volFmt(vs[i])}</span>` : ""].join("");
+      tip.innerHTML = `<b>${fmt(ys[i])}</b> <span class="${cls(ch)}">${pct(ch)}</span>${extra}<span class="muted">${whenFmt(xs[i], range, tz)}</span>`;
+      placeTip(tip, r, W, H, X(i), Y(ys[i]));
+    });
+  }
+
+  // two lines rebased to the same start, on a shared time axis
+  function drawCompare(d1, d2, range) {
+    const box = $("#m-chart");
+    const a0 = d1.points || [], b0 = d2.points || [];
+    if (a0.length < 2 || b0.length < 2) return drawSvgChart(d1, range);
+    const t0 = Math.max(a0[0][0], b0[0][0]), t1 = Math.max(a0[a0.length - 1][0], b0[b0.length - 1][0]);
+    const trim = (pts) => { let k = pts.findIndex((p) => p[0] >= t0); if (k > 0 && pts[k][0] > t0) k--; return pts.slice(Math.max(0, k)); };
+    const A = trim(a0), Bs = trim(b0);
+    if (A.length < 2 || Bs.length < 2 || t1 <= t0) {
+      box.innerHTML = '<div class="empty">These two don\'t trade at overlapping times in this range. Try 5D or longer.</div>';
+      return;
+    }
+    const rb = (pts) => pts.map((p) => [p[0], (p[1] / pts[0][1] - 1) * 100]);
+    const ra = rb(A), rbb = rb(Bs);
+    const W = box.clientWidth || 760, H = Math.min(340, Math.max(230, Math.round(W * 0.44))), L = 4, R = 58, T = 14, B = 26;
+    const all = [...ra, ...rbb].map((p) => p[1]);
+    let lo = Math.min(0, ...all), hi = Math.max(0, ...all);
+    const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
+    const X = (t) => L + ((Math.max(t0, t) - t0) / (t1 - t0)) * (W - L - R);
+    const Y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+    const path = (pts) => pts.map((p, i) => (i ? "L" : "M") + X(p[0]).toFixed(1) + " " + Y(p[1]).toFixed(1)).join("");
+    const step = niceStep((hi - lo) / 4);
+    let grid = "";
+    for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) grid += `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" class="gl"/><text x="${W - R + 8}" y="${Y(v) + 4}" class="gt">${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(step < 1 ? 1 : 0)}%</text>`;
+    const tz = d1.tz || "UTC", fmtX = timeFmt(range, tz);
+    let xl = "";
+    const nT = W < 500 ? 4 : 6;
+    for (let k = 0; k < nT; k++) { const t = t0 + (k / (nT - 1)) * (t1 - t0); xl += `<text x="${X(t)}" y="${H - 6}" class="gt" text-anchor="${k === 0 ? "start" : k === nT - 1 ? "end" : "middle"}">${fmtX(t)}</text>`; }
+    const endA = ra[ra.length - 1][1], endB = rbb[rbb.length - 1][1];
+    const sg = (v) => `<b class="${cls(v)}">${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(2)}%</b>`;
+    box.innerHTML = `<div class="cmp-legend"><span><i class="k1"></i>${esc(nameOf(modal.sym))} ${sg(endA)}</span><span><i class="k2"></i>${esc(nameOf(modal.cmp))} ${sg(endB)}</span></div>
+      <svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" id="m-svg" role="img" aria-label="${esc(nameOf(modal.sym))} compared with ${esc(nameOf(modal.cmp))}">
+      ${grid}<line x1="${L}" x2="${W - R}" y1="${Y(0)}" y2="${Y(0)}" class="prev"/>
+      <path d="${path(rbb)}" class="cline c2"/><path d="${path(ra)}" class="cline c1"/>${xl}
+      <g id="hov" visibility="hidden"><line id="hx" y1="${T}" y2="${H - B}" class="cross"/><circle id="hc" r="4.5" class="cdot c1"/><circle id="hc2" r="4.5" class="cdot c2"/></g>
+      <rect x="${L}" y="0" width="${W - L - R}" height="${H}" fill="transparent" id="hit"/></svg><div id="m-tip" class="tip" hidden></div>`;
+    const near = (pts, t) => { let lo2 = 0, hi2 = pts.length - 1; while (hi2 - lo2 > 1) { const m = (lo2 + hi2) >> 1; if (pts[m][0] <= t) lo2 = m; else hi2 = m; } return Math.abs(pts[hi2][0] - t) < Math.abs(pts[lo2][0] - t) ? pts[hi2] : pts[lo2]; };
+    hoverize(W, (x, r, tip) => {
+      const t = t0 + ((Math.max(L, Math.min(W - R, x)) - L) / (W - L - R)) * (t1 - t0);
+      const pa = near(ra, t), pb = near(rbb, t);
+      $("#hx").setAttribute("x1", X(t)); $("#hx").setAttribute("x2", X(t));
+      $("#hc").setAttribute("cx", X(pa[0])); $("#hc").setAttribute("cy", Y(pa[1]));
+      $("#hc2").setAttribute("cx", X(pb[0])); $("#hc2").setAttribute("cy", Y(pb[1]));
+      tip.innerHTML = `<span class="tip-row2"><i class="k1"></i>${esc(nameOf(modal.sym))} ${sg(pa[1])}</span><span class="tip-row2"><i class="k2"></i>${esc(nameOf(modal.cmp))} ${sg(pb[1])}</span><span class="muted">${whenFmt(t, range, tz)}</span>`;
+      placeTip(tip, r, W, H, X(t), Y(pa[1]));
+    });
+  }
 
   // ── render & controls ────────────────────────────────────────────────────
   function render() {
     renderHighlights.key = null;
-    renderStatus(); renderHero(); renderStrip(); renderMain();
+    renderStatus(); renderHero(); renderWatch(); renderStrip(); renderMain();
     if (modal.sym) modalPrice();
   }
   function renderChips() {
@@ -808,7 +1104,7 @@
     state.view = v;
     document.querySelectorAll("#views button").forEach((x) => { const on = x.dataset.view === v; x.classList.toggle("on", on); x.setAttribute("aria-selected", on); });
     moveInk();
-    try { history.replaceState(null, "", v === "cards" ? location.pathname : "#" + v); } catch (e) {}
+    writeHash();
     const go = () => renderMain();
     if (document.startViewTransition && !REDUCED && !opts.instant) document.startViewTransition(go); else go();
   }
@@ -910,16 +1206,43 @@
     spop.style.left = Math.max(12, Math.min(r.right - w, window.innerWidth - w - 12)) + "px";
     spop.style.width = w + "px";
   }
+  // anything else listed anywhere: Yahoo Finance's own search, fetched after a short pause in typing
+  const remoteCache = {};
+  let remoteT;
+  function remoteFor(q) {
+    q = q.trim().toLowerCase();
+    if (q.length < 2) return [];
+    if (remoteCache[q]) return remoteCache[q];
+    clearTimeout(remoteT);
+    remoteT = setTimeout(() => {
+      remoteCache[q] = "loading";
+      fetch("/api/search?q=" + encodeURIComponent(q)).then((r) => r.json()).then((j) => { remoteCache[q] = j.results || []; })
+        .catch(() => { remoteCache[q] = []; })
+        .finally(() => { if (sbox.value.trim().toLowerCase() === q && document.activeElement === sbox) drawPop(); });
+    }, 220);
+    return "loading";
+  }
   function drawPop() {
     const q = sbox.value.trim();
     if (!q) { spop.hidden = true; sbox.setAttribute("aria-expanded", "false"); return; }
-    hits = searchHits(q);
+    const local = searchHits(q);
+    const known = new Set(local.map((it) => (it.k === "c" ? it.c.indices[0][0] : it.s)));
+    const rem = remoteFor(q);
+    const extra = Array.isArray(rem) ? rem.filter((r) => !known.has(r.symbol)).slice(0, 6)
+      .map((r) => ({ k: "r", s: r.symbol, name: r.name, icon: "", sub: [r.type, r.exchange].filter(Boolean).join(", "), kind: r.kind })) : [];
+    hits = [...local, ...extra];
     active = Math.min(active, Math.max(0, hits.length - 1));
-    spop.innerHTML = hits.length ? hits.map((it, i) => {
+    const row = (it, i) => {
       const s = it.k === "c" ? it.c.indices[0][0] : it.s, qq = Qv(s);
-      const right = qq.price != null ? `<span class="sp-r">${it.k === "c" ? `<small>${esc(it.c.indices[0][1])}</small>` : fmt(qq.price)}${chip(qq.changePct)}</span>` : "";
+      const right = qq.price != null ? `<span class="sp-r">${it.k === "c" ? `<small>${esc(it.c.indices[0][1])}</small>` : fmt(qq.price)}${chip(qq.changePct)}</span>`
+        : it.k === "r" ? `<span class="sp-r"><small>${esc(tickerOf(it.s))}</small></span>` : "";
       return `<button class="sp-item ${i === active ? "on" : ""}" data-i="${i}" role="option" aria-selected="${i === active}"><span class="sp-ic">${it.icon}</span><span class="sp-t"><b>${esc(it.name)}</b><small>${esc(it.k === "c" ? "Country, " + it.sub : it.sub)}</small></span>${right}</button>`;
-    }).join("") : `<p class="sp-empty">Nothing matches “${esc(q)}”. Try a country, an index, a company or a currency.</p>`;
+    };
+    let html = local.map(row).join("");
+    if (extra.length) html += `<p class="sp-sec">More from Yahoo Finance</p>` + extra.map((it, j) => row(it, local.length + j)).join("");
+    else if (rem === "loading") html += `<p class="sp-sec">Searching every market…</p>`;
+    if (!hits.length && rem !== "loading") html = `<p class="sp-empty">Nothing matches “${esc(q)}”. Try a country, an index, a company or a ticker like TCS.NS.</p>`;
+    spop.innerHTML = html;
     placePop();
     spop.hidden = false; sbox.setAttribute("aria-expanded", "true");
   }
@@ -928,6 +1251,11 @@
     if (!it) return;
     closePop(); sbox.value = ""; sbox.blur();
     if (it.k === "s") return openChart(it.s);
+    if (it.k === "r") {
+      NAMES[it.s] = NAMES[it.s] || { name: it.name, sub: it.sub };
+      if (it.kind === "EQUITY") STOCK_SET.add(it.s);
+      return openChart(it.s);
+    }
     // a country: show its card, wherever the filters were
     state.q = ""; state.region = "All"; state.openOnly = false; $("#open-only").checked = false; renderChips();
     setView("cards", { instant: true });
@@ -965,11 +1293,39 @@
     openChart(a.dataset.sym, e.detail === 0);
   });
   $("#m-ranges").onclick = (e) => { const b = e.target.closest("button"); if (!b) return; modal.range = b.dataset.r; drawModal(); };
+  $("#m-star").onclick = () => modal.sym && toggleWatch(modal.sym);
+  $("#m-share").onclick = async () => {
+    writeHash();
+    const url = location.href, title = nameOf(modal.sym) + " on World Markets";
+    if (navigator.share && window.matchMedia("(pointer: coarse)").matches) { try { await navigator.share({ title, url }); } catch (e) {} return; }
+    try { await navigator.clipboard.writeText(url); toast("Link copied. It opens this exact chart."); }
+    catch (e) { toast("Copy the link from your address bar to share this chart."); }
+  };
+  // overlays and comparison under the chart
+  $("#m-tools").addEventListener("click", (e) => {
+    const o = e.target.closest("[data-opt]");
+    if (o) { copts[o.dataset.opt] = !copts[o.dataset.opt]; store.set("wm-copts", copts); return drawModal(); }
+    if (e.target.closest("[data-cmp-open]")) {
+      const pick = $("#cmp-pick"), btn = e.target.closest("[data-cmp-open]");
+      pick.hidden = !pick.hidden; btn.setAttribute("aria-expanded", !pick.hidden);
+      if (!pick.hidden) $("#cmp-q").focus();
+      return;
+    }
+    const c = e.target.closest("[data-cmp]");
+    if (c) { modal.cmp = c.dataset.cmp; return drawModal(); }
+    if (e.target.closest("[data-cmp-clear]")) { modal.cmp = null; drawModal(); }
+  });
+  $("#m-tools").addEventListener("input", (e) => { if (e.target.id === "cmp-q") $("#cmp-list").innerHTML = cmpList(e.target.value); });
+  $("#m-tools").addEventListener("keydown", (e) => {
+    if (e.target.id === "cmp-q" && e.key === "Enter") { const first = $("#cmp-list [data-cmp]"); if (first) { e.preventDefault(); first.click(); } }
+  });
   $("#modal").addEventListener("click", (e) => { if (e.target.id === "modal" || e.target.closest("#m-close")) closeChart(); });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && $("#theme-pop") && !$("#theme-pop").hidden) return toggleThemes(false);
     if (e.key === "Escape" && modal.sym) return closeChart();
-    if (modal.sym && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+    const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName);
+    if (modal.sym && !typing && (e.key === "s" || e.key === "S") && !e.ctrlKey && !e.metaKey) { e.preventDefault(); return toggleWatch(modal.sym); }
+    if (modal.sym && !typing && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
       const i = RANGES.findIndex((r) => r[0] === modal.range) + (e.key === "ArrowRight" ? 1 : -1);
       if (i >= 0 && i < RANGES.length) { e.preventDefault(); modal.range = RANGES[i][0]; drawModal(); }
       return;
@@ -1017,9 +1373,26 @@
   const rs = window.REF_SOURCES;
   $("#ref-sources").textContent = `policy rates from ${rs.policy}; 10-year yields from ${rs.y10}; market sizes from ${rs.mcap}; economy figures from the ${window.MACRO_SOURCE || "IMF"}`;
 
-  const initial = location.hash.slice(1);
-  if (["map", "heat", "table", "stocks", "india"].includes(initial)) setView(initial, { instant: true });
+  // the address can name a view and a chart: #india&chart=TCS.NS&range=1y&vs=^NSEI
+  function readHash() {
+    const hp = location.hash.slice(1).split("&").filter(Boolean);
+    const view = hp[0] && !hp[0].includes("=") ? hp[0] : "cards";
+    const q = Object.fromEntries(hp.filter((x) => x.includes("=")).map((x) => { const i = x.indexOf("="); return [x.slice(0, i), decodeURIComponent(x.slice(i + 1))]; }));
+    return { view: ["map", "heat", "table", "stocks", "cal", "india"].includes(view) ? view : "cards", ...q };
+  }
+  function applyHash(first) {
+    const h = readHash();
+    if (h.view !== state.view) setView(h.view, { instant: true });
+    if (h.chart) {
+      if (RANGES.some((r) => r[0] === h.range)) modal.range = h.range;
+      const same = modal.sym === h.chart;
+      modal.cmp = h.vs || null;
+      if (!same || first) openChart(h.chart, false, true); else drawModal();
+    } else if (modal.sym) closeChart();
+  }
+  window.addEventListener("hashchange", () => applyHash(false));
   render();
+  applyHash(true);
   requestAnimationFrame(moveInk);
   if (document.fonts) document.fonts.ready.then(moveInk);
   load();
