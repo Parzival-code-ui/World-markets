@@ -2,69 +2,82 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>World Markets — global indices, FX, rates, commodities</title>
-<meta name="description" content="Live view of stock markets around the world: major indices, currencies, policy rates, bond yields, commodities and crypto." />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>World Markets — what's trading right now</title>
+<meta name="description" content="Live view of stock markets around the world: major indices, currencies, rates, commodities and crypto, with India in depth." />
+<meta name="theme-color" content="#0f1726" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&display=swap" />
 <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
 <header class="top">
-  <div class="brand">
-    <div class="logo">◐</div>
-    <div>
-      <h1>World Markets</h1>
-      <p class="sub" id="status-line">Loading quotes…</p>
-    </div>
-  </div>
-  <div class="controls">
-    <input id="search" type="search" placeholder="Search country or index…" autocomplete="off" />
-    <button id="refresh" class="btn" title="Refresh now">↻ Refresh</button>
+  <a class="brand" href="#" aria-label="World Markets home">
+    <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-width="2"/><path d="M2 16h28M16 2c-5 4-6 22 0 28M16 2c5 4 6 22 0 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity=".55"/><circle cx="23" cy="9" r="3.2" fill="var(--sun)"/></svg>
+    <span>World Markets</span>
+  </a>
+  <div class="tools">
+    <label class="search"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m13 13 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <input id="search" type="search" placeholder="Search a country or index" autocomplete="off" aria-label="Search a country or index" /><kbd>/</kbd></label>
+    <button id="refresh" class="iconbtn" title="Refresh prices" aria-label="Refresh prices"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 10a6 6 0 1 1-1.8-4.3M16 3.5V7h-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
   </div>
 </header>
 
-<div id="demo-banner" class="banner" hidden>Demo mode: the prices are randomly generated. Deploy without <code>MOCK=1</code> to get live quotes.</div>
+<div id="demo-banner" class="banner" hidden>Demo mode: prices are made up. Deploy without <code>MOCK=1</code> to see live prices.</div>
 
-<section class="clocks" id="clocks"></section>
-
-<section class="global" id="global"></section>
-
-<nav class="bar">
-  <div class="chips" id="regions"></div>
-  <div class="right">
-    <label class="toggle"><input type="checkbox" id="open-only" /> Open now</label>
-    <div class="seg" id="views">
-      <button data-view="cards" class="on">Countries</button>
-      <button data-view="map">World map</button>
-      <button data-view="heat">Heatmap</button>
-      <button data-view="table">Table</button>
-      <button data-view="india">🇮🇳 India</button>
-    </div>
+<section class="hero">
+  <div class="hero-copy">
+    <h1 id="headline">Checking which markets are open…</h1>
+    <p id="subline" class="subline"></p>
   </div>
+  <div id="ribbon" class="ribbon" aria-label="Today's trading hours in your time"></div>
+  <div id="highlights" class="highlights"></div>
+</section>
+
+<section class="strip-wrap" aria-label="Commodities, crypto, rates and the dollar">
+  <div id="strip" class="strip"></div>
+</section>
+
+<nav class="tabs-wrap" aria-label="Views">
+  <div class="tabs" id="views" role="tablist">
+    <button data-view="cards" role="tab" aria-selected="true">Countries</button>
+    <button data-view="map" role="tab">World map</button>
+    <button data-view="heat" role="tab">Heatmap</button>
+    <button data-view="table" role="tab">Table</button>
+    <button data-view="india" role="tab">🇮🇳 India</button>
+    <span class="tab-ink" id="tab-ink"></span>
+  </div>
+  <p id="status-line" class="updated">Loading prices</p>
 </nav>
+
+<div class="filters" id="filters">
+  <div class="chips" id="regions"></div>
+  <label class="switch"><input type="checkbox" id="open-only" /><span class="track"><span class="thumb"></span></span>Open now</label>
+</div>
 
 <main id="main"></main>
 
 <footer class="foot">
-  <p><strong>Live data:</strong> index levels, currencies, commodities, crypto and US Treasury yields are pulled from Yahoo Finance's public chart feed via this site's <code>/api/quotes</code> function and cached for about 60 seconds. Some exchanges' data is delayed by 15–20 minutes.</p>
-  <p><strong>Reference data (updated by hand):</strong> <span id="ref-sources"></span>. Market hours follow regular sessions and ignore public holidays.</p>
-  <p class="muted">For information and education only. This is not investment advice.</p>
+  <p>Prices, currencies, commodities, crypto and US Treasury yields come from Yahoo Finance and refresh every minute. Some exchanges are delayed by 15–20 minutes. Trading hours are regular sessions and don't account for public holidays.</p>
+  <p>Policy rates, 10-year yields outside the US, and market caps are updated by hand: <span id="ref-sources"></span>.</p>
+  <p>For information and learning only, not investment advice.</p>
 </footer>
 
 <div id="modal" class="modal" hidden>
-  <div class="mbox" role="dialog" aria-modal="true">
+  <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="m-title">
+    <div class="grab" aria-hidden="true"></div>
     <div class="mtop">
       <div id="m-title"></div>
-      <button id="m-close" class="btn" aria-label="Close">✕</button>
+      <button id="m-close" class="iconbtn" aria-label="Close chart"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
     </div>
     <div class="mrow">
       <div id="m-price"></div>
-      <div class="seg" id="m-ranges"></div>
+      <div class="seg" id="m-ranges" role="tablist" aria-label="Chart range"></div>
     </div>
     <div id="m-chart" class="mchart"></div>
     <div id="m-stats" class="mstats"></div>
-    <div class="mfoot"><a id="m-yahoo" target="_blank" rel="noopener">Open on Yahoo Finance ↗</a><span class="muted small">Esc to close</span></div>
+    <div class="mfoot"><a id="m-yahoo" target="_blank" rel="noopener">Open on Yahoo Finance</a><span class="muted">Press Esc to close</span></div>
   </div>
 </div>
 
