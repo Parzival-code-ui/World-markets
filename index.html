@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>World Markets — global indices, FX, rates, commodities</title>
+<meta name="description" content="Live view of stock markets around the world: major indices, currencies, policy rates, bond yields, commodities and crypto." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="logo">◐</div>
+    <div>
+      <h1>World Markets</h1>
+      <p class="sub" id="status-line">Loading quotes…</p>
+    </div>
+  </div>
+  <div class="controls">
+    <input id="search" type="search" placeholder="Search country or index…" autocomplete="off" />
+    <button id="refresh" class="btn" title="Refresh now">↻ Refresh</button>
+  </div>
+</header>
+
+<div id="demo-banner" class="banner" hidden>Demo mode: the prices are randomly generated. Deploy without <code>MOCK=1</code> to get live quotes.</div>
+
+<section class="clocks" id="clocks"></section>
+
+<section class="global" id="global"></section>
+
+<nav class="bar">
+  <div class="chips" id="regions"></div>
+  <div class="right">
+    <label class="toggle"><input type="checkbox" id="open-only" /> Open now</label>
+    <div class="seg" id="views">
+      <button data-view="cards" class="on">Countries</button>
+      <button data-view="heat">Heatmap</button>
+      <button data-view="table">Table</button>
+    </div>
+  </div>
+</nav>
+
+<main id="main"></main>
+
+<footer class="foot">
+  <p><strong>Live data:</strong> index levels, currencies, commodities, crypto and US Treasury yields are pulled from Yahoo Finance's public chart feed via this site's <code>/api/quotes</code> function and cached for about 60 seconds. Some exchanges' data is delayed by 15–20 minutes.</p>
+  <p><strong>Reference data (updated by hand):</strong> <span id="ref-sources"></span>. Market hours follow regular sessions and ignore public holidays.</p>
+  <p class="muted">For information and education only. This is not investment advice.</p>
+</footer>
+
+<script src="data/markets.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
