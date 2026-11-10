@@ -4,13 +4,15 @@
   const REGIONS = ["All", "Americas", "Europe", "Middle East & Africa", "Asia-Pacific"];
   const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  const state = { quotes: {}, prev: {}, region: "All", view: "cards", q: "", openOnly: false, sort: { key: "changePct", dir: -1 }, stockSort: { key: "changePct", dir: -1 }, fetchedAt: null, mock: false, error: null, hadData: false, stale: false };
+  const state = { quotes: {}, prev: {}, region: "All", view: "cards", q: "", openOnly: false, sort: { key: "changePct", dir: -1 }, stockSort: { key: "changePct", dir: -1 }, fetchedAt: null, mock: false, error: null, hadData: false, stale: false, fund: {}, fundT: {}, stockMkt: "us", stocksSort: { key: "marketCap", dir: -1 } };
   const store = { get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
   // last prices seen, so a return visit paints instantly
   const cached = store.get("wm-quotes");
   if (cached && cached.quotes && Date.now() - cached.t < 3 * 864e5) {
     state.quotes = cached.quotes; state.fetchedAt = cached.t; state.hadData = true; state.stale = true;
   }
+  const cachedF = store.get("wm-fund");
+  if (cachedF && cachedF.f && Date.now() - cachedF.t < 864e5) state.fund = cachedF.f; // shown at once, refreshed in the background
 
   // ── symbols & names ──────────────────────────────────────────────────────
   const fx = (c) => (c === "USD" ? null : c + "=X");
@@ -27,6 +29,12 @@
   IN.stocks.forEach(([s, n, sec]) => { symbols.add(s); NAMES[s] = { name: n, sub: `🇮🇳 ${sec}, NSE: ${s.replace(".NS", "")}` }; });
   NAMES["INR=X"] = { name: "US dollar in rupees", sub: "USD / INR" };
   const byId = Object.fromEntries(M.map((c) => [c.id, c]));
+  // largest companies per market (Stocks tab); India reuses the deep-dive list
+  const SM = window.STOCK_MARKETS.map((m) => (m.stocks ? m : Object.assign({}, m, { stocks: IN.stocks })));
+  const STOCK_SET = new Set();
+  SM.forEach((m) => m.stocks.forEach(([s, n, sec]) => { STOCK_SET.add(s); NAMES[s] = NAMES[s] || { name: n, sub: `${m.flag} ${sec}` }; }));
+  symbols.add("DKK=X"); // so European market caps can be compared in dollars
+  const MAC = window.MACRO || {};
 
   // ── helpers ──────────────────────────────────────────────────────────────
   const $ = (s) => document.querySelector(s);
@@ -126,7 +134,7 @@
     const btn = $("#refresh");
     btn.classList.add("spin");
     try {
-      const r = await fetch("/api/quotes?symbols=" + encodeURIComponent([...symbols].join(",")));
+      const r = await fetch("/api/quotes?symbols=" + encodeURIComponent([...symbols, ...extraSyms()].join(",")));
       if (!r.ok) throw new Error("the price service answered " + r.status);
       const j = await r.json();
       state.prev = Object.fromEntries(Object.entries(state.quotes).map(([k, v]) => [k, v && v.price]));
@@ -146,6 +154,86 @@
     if (state.hadData && !state.error) patch(); else render();
     if (!state.error) state.hadData = true;
   }
+
+  // stocks outside the always-loaded set: fetched only while their market is open in the Stocks tab
+  const stockList = () => (SM.find((m) => m.id === state.stockMkt) || SM[0]).stocks;
+  const extraSyms = () => (state.view === "stocks" ? stockList().map((x) => x[0]).filter((s) => !symbols.has(s)) : []);
+  const extraBusy = new Set();
+  async function loadExtra() {
+    const need = extraSyms().filter((s) => !state.quotes[s] && !extraBusy.has(s));
+    if (!need.length) return;
+    need.forEach((s) => extraBusy.add(s));
+    try {
+      const j = await fetch("/api/quotes?symbols=" + encodeURIComponent(need.join(","))).then((r) => r.json());
+      Object.assign(state.quotes, j.quotes || {});
+    } catch (e) { /* the next minute's refresh includes them */ }
+    need.forEach((s) => extraBusy.delete(s));
+    if (state.view === "stocks") renderMain();
+  }
+
+  // ── fundamentals ─────────────────────────────────────────────────────────
+  const fundBusy = new Set();
+  let fundErr = null;
+  function ensureFund(list) {
+    const need = list.filter((s) => !fundBusy.has(s) && !(state.fundT[s] && Date.now() - state.fundT[s] < 3600e3));
+    if (!need.length) return;
+    need.forEach((s) => fundBusy.add(s));
+    fetch("/api/fundamentals?symbols=" + encodeURIComponent(need.join(","))).then(async (r) => {
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "the service answered " + r.status);
+      Object.assign(state.fund, j.fundamentals || {});
+      need.forEach((s) => (state.fundT[s] = Date.now()));
+      fundErr = null;
+      if (!j.mock) store.set("wm-fund", { t: Date.now(), f: state.fund });
+    }).catch((e) => {
+      fundErr = e.message || "network error";
+      need.forEach((s) => (state.fundT[s] = Date.now() - 3300e3)); // try again in about 5 minutes
+    }).finally(() => {
+      need.forEach((s) => fundBusy.delete(s));
+      if (["stocks", "india"].includes(state.view)) renderMain();
+    });
+  }
+  const fundDetail = {};
+  function getFundDetail(s) {
+    const hit = fundDetail[s];
+    if (hit && Date.now() - hit.t < 3600e3) return hit.p;
+    const p = fetch("/api/fundamentals?symbol=" + encodeURIComponent(s)).then(async (r) => {
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "HTTP " + r.status);
+      return d;
+    });
+    fundDetail[s] = { t: Date.now(), p };
+    p.catch(() => delete fundDetail[s]);
+    return p;
+  }
+  const CUR = { USD: "$", INR: "₹", GBP: "£", EUR: "€", JPY: "¥", CNY: "¥", HKD: "HK$", TWD: "NT$", KRW: "₩", SGD: "S$", AUD: "A$", CHF: "CHF ", DKK: "DKK ", IDR: "Rp " };
+  function money(v, cur) {
+    if (v == null || !isFinite(v)) return "—";
+    const neg = v < 0 ? "−" : "";
+    v = Math.abs(v);
+    if (cur === "INR") { // Indian convention: crore and lakh crore
+      const cr = v / 1e7;
+      return neg + "₹" + (cr >= 1e5 ? (cr / 1e5).toFixed(2) + " lakh cr" : cr >= 1 ? Math.round(cr).toLocaleString("en-IN") + " cr" : Math.round(v).toLocaleString("en-IN"));
+    }
+    const c = CUR[cur] != null ? CUR[cur] : cur ? cur + " " : "";
+    const [d, u] = v >= 1e12 ? [1e12, "T"] : v >= 1e9 ? [1e9, "B"] : v >= 1e6 ? [1e6, "M"] : [1, ""];
+    return neg + c + (v / d).toFixed(v / d >= 100 ? 0 : 1) + u;
+  }
+  const usdOf = (v, cur) => { if (v == null) return null; if (!cur || cur === "USD") return v; const r = Qv(cur + "=X").price; return r ? v / r : null; };
+  const ratio = (v, d = 1) => (v == null || !isFinite(v) || v <= 0 ? "—" : v.toFixed(d));
+  const pctPlain = (v, d = 1) => (v == null || !isFinite(v) ? "—" : (v < 0 ? "−" : "") + Math.abs(v).toFixed(d) + "%");
+  const tickerOf = (s) => s.replace(/\.(NS|L|T|HK|SS|SZ|TW|KS|SI|AX|JK|AS|DE|PA|CO|SW)$/, "");
+
+  // economy facts from the IMF, shown on country cards, the map and the India view
+  function econHTML(id) {
+    const e = MAC[id];
+    if (!e) return "";
+    const it = (k, v, sign, sfx = "%") => `<div><dt>${k}</dt><dd>${v == null ? "—" : (sign && v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(1) + sfx}</dd></div>`;
+    const gdp = e[4] >= 1000 ? "$" + (e[4] / 1000).toFixed(1) + " trillion" : "$" + Math.round(e[4]) + " billion";
+    return `<div class="econ" title="${esc(window.MACRO_SOURCE || "IMF")}"><p class="econ-h">Economy in 2026<span>${gdp} GDP</span></p>
+      <dl>${it("GDP growth", e[0], 1)}${it("Inflation", e[1])}${it("Unemployment", e[2])}${it("Debt to GDP", e[3], 0)}</dl></div>`;
+  }
+  const econLine = (id) => { const e = MAC[id]; return e ? `<span class="muted">Economy: ${e[0] > 0 ? "+" : ""}${e[0].toFixed(1)}% growth, ${e[1].toFixed(1)}% inflation (IMF, 2026)</span>` : ""; };
 
   // ── hero ─────────────────────────────────────────────────────────────────
   const REGION_KEYS = [["Asia-Pacific", ["jp", "cn", "hk", "in", "kr", "au"]], ["Europe", ["uk", "de", "fr", "eu", "ch"]], ["the Middle East and Africa", ["sa", "za", "il", "ae"]], ["the Americas", ["us", "ca", "br"]]];
@@ -265,7 +353,7 @@
     else y = { v: c.wgb ? `<a class="ext" href="https://www.worldgovernmentbonds.com/country/${c.wgb}/" target="_blank" rel="noopener">See yield</a>` : "—", d: "no free source" };
     const mc = c.mcap ? { v: "$" + c.mcap[0].toFixed(1) + " trillion", d: c.mcap[1] } : null;
     const item = (k, o) => `<div><dt>${k}</dt><dd>${o.v}</dd><dd class="d">${o.d}</dd></div>`;
-    return `<dl class="facts" data-facts="${c.id}">${item("Currency", f)}${item("Policy rate", pol)}${item("10-year yield", y)}${mc ? item("Market size", mc) : ""}</dl>`;
+    return `<div class="factwrap" data-facts="${c.id}"><dl class="facts">${item("Currency", f)}${item("Policy rate", pol)}${item("10-year yield", y)}${mc ? item("Market size", mc) : ""}</dl>${econHTML(c.id)}</div>`;
   }
   const stInner = (s) => `<span class="dot"></span><span><b>${s.text}</b><small>${s.sub}, ${s.label} local</small></span>`;
   function card(c) {
@@ -331,7 +419,7 @@
           const c = byId[p.dataset.m], q = state.quotes[c.indices[0][0]] || {}, st = status(c);
           tip.hidden = false;
           tip.innerHTML = `<b>${c.flag} ${esc(p.dataset.nm)}</b>${p.dataset.m === "eu" && p.dataset.nm !== "Euro Area" ? '<span class="muted">Shown with the Euro Stoxx 50</span>' : ""}
-            <span class="tip-row"><span>${esc(c.indices[0][1])}</span><span>${fmt(q.price)}</span><span class="${cls(q.changePct)}">${pct(q.changePct)}</span></span><span class="muted">${st.text}. ${st.sub}.</span>`;
+            <span class="tip-row"><span>${esc(c.indices[0][1])}</span><span>${fmt(q.price)}</span><span class="${cls(q.changePct)}">${pct(q.changePct)}</span></span><span class="muted">${st.text}. ${st.sub}.</span>${econLine(p.dataset.m)}`;
           const r = box.getBoundingClientRect();
           tip.style.left = Math.min(e.clientX - r.left + 16, r.width - 240) + "px";
           tip.style.top = e.clientY - r.top + 70 + "px";
@@ -371,34 +459,85 @@
     }).join("");
     const secs = IN.sectors.map(([s, n]) => ({ s, n, q: Q(s) })).sort((a, b) => (b.q.changePct ?? -1e9) - (a.q.changePct ?? -1e9));
     const sectorHtml = secs.map((r) => `<a class="tile" href="${yurl(r.s)}" data-sym="${esc(r.s)}" data-tile="${esc(r.s)}" data-max="2" style="${tileStyle(r.q.changePct, 2)}"><span class="tn">${esc(r.n)}</span><span class="tp">${pct(r.q.changePct)}</span><span class="tc">${r.q.change1mPct != null ? pct(r.q.change1mPct) + " this month" : ""}</span></a>`).join("");
-    const st = IN.stocks.map(([s, n, sec]) => ({ s, n, sec, q: Q(s) }));
-    const k = state.stockSort.key, d = state.stockSort.dir;
-    const val = (r) => (k === "n" ? r.n : k === "sec" ? r.sec : r.q[k]);
-    st.sort((a, b) => { const x = val(a), y = val(b); if (x == null) return 1; if (y == null) return -1; return (typeof x === "string" ? x.localeCompare(y) : x - y) * d; });
-    const th = (key, label, r) => `<th class="${r ? "r" : ""}" aria-sort="${k === key ? (d > 0 ? "ascending" : "descending") : "none"}"><button data-sk="${key}">${label}<i>${k === key ? (d > 0 ? "↑" : "↓") : ""}</i></button></th>`;
+    ensureFund(IN.stocks.map((x) => x[0]));
     const s = status(byId.in);
     el.innerHTML = `
       <section class="in-hero"><div><h2>India today</h2><p class="muted">NSE and BSE are <b class="${s.kind}">${s.text.toLowerCase()}</b>. ${s.sub}.</p></div>
         <div class="breadth" id="breadth" title="How many of the 30 largest stocks are up or down today">${breadthHTML()}</div></section>
       <div class="itiles">${head}</div>
+      ${econHTML("in")}
       <section class="panel"><div class="panel-h"><div><h2>Sectors</h2><p class="muted">Sorted by today's move. Click a sector to see its chart.</p></div></div><div class="heat sectors">${sectorHtml}</div></section>
-      <section class="panel"><div class="panel-h"><div><h2>Largest companies</h2><p class="muted">30 of the biggest Nifty 50 stocks. Click a column to sort.</p></div></div>
-      <div class="tscroll"><table class="t"><thead><tr>${th("n", "Company")}${th("sec", "Sector")}${th("price", "Price (₹)", 1)}${th("changePct", "Today", 1)}${th("change1mPct", "Month", 1)}<th class="r">Trend</th></tr></thead><tbody>
-        ${st.map((r) => `<tr><td>${sym(r.s, `<b>${esc(r.n)}</b><small>${esc(r.s.replace(".NS", ""))}</small>`)}</td><td class="muted">${esc(r.sec)}</td>
-          <td class="r">${px(r.s)}</td><td class="r">${chipS(r.s)}</td><td class="r">${pctT(r.s, "change1mPct")}</td><td class="r">${sparkS(r.s)}</td></tr>`).join("")}
-      </tbody></table></div></section>`;
+      <section class="panel"><div class="panel-h"><div><h2>Largest companies</h2><p class="muted">30 of the biggest Nifty 50 stocks. Click a column to sort, or a company for its full fundamentals.</p></div></div>
+      ${stockTable(IN.stocks, state.stockSort, "data-sk", "Price (₹)")}${fundNote()}</section>`;
     el.querySelectorAll("[data-sk]").forEach((b) => b.onclick = () => {
-      const key = b.dataset.sk;
-      state.stockSort = { key, dir: state.stockSort.key === key ? -state.stockSort.dir : (["n", "sec"].includes(key) ? 1 : -1) };
+      state.stockSort = nextSort(state.stockSort, b.dataset.sk);
       renderIndia(el);
+    });
+  }
+
+  // ── stocks: one table component for India and every other market ─────────
+  const nextSort = (cur, key) => ({ key, dir: cur.key === key ? -cur.dir : (["n", "sec", "pe"].includes(key) ? 1 : -1) });
+  function stockTable(list, sortState, attr, priceLabel = "Price") {
+    const k = sortState.key, d = sortState.dir;
+    const rows = list.map(([s, n, sec]) => ({ s, n, sec, q: Qv(s), f: state.fund[s] }));
+    const val = (r) => {
+      if (k === "n") return r.n;
+      if (k === "sec") return r.sec;
+      if (["marketCap", "pe", "divYield"].includes(k)) {
+        if (!r.f) return null;
+        if (k === "marketCap") return usdOf(r.f.marketCap, r.f.currency);
+        if (k === "pe") return r.f.pe > 0 ? r.f.pe : null;
+        return r.f.divYield || null;
+      }
+      return r.q[k];
+    };
+    rows.sort((a, b) => { const x = val(a), y = val(b); if (x == null) return 1; if (y == null) return -1; return (typeof x === "string" ? x.localeCompare(y) : x - y) * d; });
+    const th = (key, label, r, tip) => `<th class="${r ? "r" : ""}" aria-sort="${k === key ? (d > 0 ? "ascending" : "descending") : "none"}"${tip ? ` title="${tip}"` : ""}><button ${attr}="${key}">${label}<i>${k === key ? (d > 0 ? "↑" : "↓") : ""}</i></button></th>`;
+    const fc = (r, html) => (r.f ? html : fundBusy.has(r.s) ? SK : "—");
+    return `<div class="tscroll"><table class="t stk"><thead><tr>${th("n", "Company")}${th("sec", "Sector")}${th("price", priceLabel, 1)}${th("changePct", "Today", 1)}${th("change1mPct", "Month", 1)}${th("pe", "P/E", 1, "Price to earnings, last 12 months")}${th("marketCap", "Market cap", 1)}${th("divYield", "Dividend", 1, "Dividend yield, last 12 months")}<th class="r">Trend</th></tr></thead><tbody>
+      ${rows.map((r) => `<tr><td>${sym(r.s, `<b>${esc(r.n)}</b><small>${esc(tickerOf(r.s))}</small>`)}</td><td class="muted">${esc(r.sec)}</td>
+        <td class="r">${px(r.s)}</td><td class="r">${chipS(r.s)}</td><td class="r">${pctT(r.s, "change1mPct")}</td>
+        <td class="r">${fc(r, ratio(r.f && r.f.pe))}</td><td class="r">${fc(r, money(r.f && r.f.marketCap, r.f && r.f.currency))}</td><td class="r">${fc(r, r.f && r.f.divYield ? pctPlain(r.f.divYield, 2) : "—")}</td><td class="r">${sparkS(r.s)}</td></tr>`).join("")}
+      </tbody></table></div>`;
+  }
+  const fundNote = () => fundErr
+    ? `<p class="note">Valuations didn't load (${esc(fundErr)}). Prices still update, and valuations try again in a few minutes.</p>`
+    : `<p class="note">P/E uses the last 12 months of earnings, so loss-making companies show a dash. Market caps are in each company's trading currency and sort in US dollars. Valuations come from Yahoo Finance and refresh hourly.</p>`;
+
+  function findStockMkt(q) {
+    q = q.toLowerCase();
+    const m = SM.find((x) => x.stocks.some(([s, n]) => n.toLowerCase().includes(q) || tickerOf(s).toLowerCase() === q));
+    return m ? m.id : null;
+  }
+  function renderStocks(el) {
+    const m = SM.find((x) => x.id === state.stockMkt) || SM[0];
+    const q = state.q.toLowerCase();
+    const list = m.stocks.filter(([s, n, sec]) => !q || n.toLowerCase().includes(q) || s.toLowerCase().includes(q) || sec.toLowerCase().includes(q));
+    if (q && !list.length && findStockMkt(q) && findStockMkt(q) !== m.id) { state.stockMkt = findStockMkt(q); return renderStocks(el); }
+    ensureFund(m.stocks.map((x) => x[0]));
+    loadExtra();
+    el.innerHTML = `<div class="chips mkts" id="mkts" role="group" aria-label="Market">${SM.map((x) => `<button class="chip ${x.id === m.id ? "on" : ""}" data-mk="${x.id}" aria-pressed="${x.id === m.id}">${x.flag} ${esc(x.name)}</button>`).join("")}</div>
+      <section class="panel"><div class="panel-h"><div><h2>Largest companies in ${esc(m.name)}</h2><p class="muted">Click a company for its chart, valuation, profitability and balance sheet. Click a column to sort.</p></div></div>
+      ${list.length ? stockTable(list, state.stocksSort, "data-sk2") : `<div class="empty"><p>No companies in ${esc(m.name)} match “${esc(state.q)}”.</p></div>`}${fundNote()}</section>`;
+    el.querySelector("#mkts").onclick = (e) => {
+      const b = e.target.closest("[data-mk]");
+      if (!b || b.dataset.mk === state.stockMkt) return;
+      state.stockMkt = b.dataset.mk;
+      const go = () => renderStocks(el);
+      if (document.startViewTransition && !REDUCED) document.startViewTransition(go); else go();
+    };
+    el.querySelectorAll("[data-sk2]").forEach((b) => b.onclick = () => {
+      state.stocksSort = nextSort(state.stocksSort, b.dataset.sk2);
+      renderStocks(el);
     });
   }
 
   // ── main ─────────────────────────────────────────────────────────────────
   function renderMain() {
     const main = $("#main");
-    $("#filters").hidden = ["map", "india"].includes(state.view);
+    $("#filters").hidden = ["map", "india", "stocks"].includes(state.view);
     if (state.view === "india") return renderIndia(main);
+    if (state.view === "stocks") return renderStocks(main);
     if (state.view === "map") return renderMap(main);
     const list = filtered();
     if (!list.length) {
@@ -533,6 +672,7 @@
     $("#m-ranges").innerHTML = RANGES.map(([k, l]) => `<button data-r="${k}" role="tab" aria-selected="${k === range}" class="${k === range ? "on" : ""}">${l}</button>`).join("");
     $("#m-yahoo").href = yurl(s);
     modalPrice();
+    drawFund(s);
     const p = getChart(s, range);
     // only show the placeholder if the data isn't already here
     let settled = false; p.then(() => { settled = true; }, () => { settled = true; });
@@ -554,6 +694,40 @@
       $("#m-chart").innerHTML = `<div class="empty">The chart didn't load (${esc(e.message)}). Pick a range to try again.</div>`;
     }
   }
+  // company fundamentals under the chart (stocks only; indices and currencies have none)
+  async function drawFund(s) {
+    const box = $("#m-fund");
+    if (!STOCK_SET.has(s)) { box.innerHTML = ""; box.dataset.s = ""; return; }
+    if (box.dataset.s === s) return; // already showing; range changes don't touch it
+    box.dataset.s = s;
+    box.innerHTML = '<div class="fund-sk"></div>';
+    try {
+      const f = await getFundDetail(s);
+      if (modal.sym === s) box.innerHTML = fundHTML(f, s);
+    } catch (e) {
+      box.dataset.s = "";
+      if (modal.sym === s) box.innerHTML = `<p class="note">Fundamentals didn't load (${esc(e.message)}). Close the chart and open it again to retry.</p>`;
+    }
+  }
+  const RATING = { strong_buy: "Strong buy", buy: "Buy", hold: "Hold", underperform: "Underperform", sell: "Sell", strong_sell: "Strong sell" };
+  function fundHTML(f, s) {
+    const c = f.currency, rc = f.reportingCurrency || c;
+    const item = (k, v, hint) => `<div><dt>${k}</dt><dd>${v}</dd>${hint ? `<dd class="d">${hint}</dd>` : ""}</div>`;
+    const grp = (title, items) => `<section class="fgrp"><h4>${title}</h4><dl>${items.join("")}</dl></section>`;
+    const sg = (v) => (v == null || !isFinite(v) ? "—" : `<span class="${cls(v)}">${(v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(1)}%</span>`);
+    const p0 = Qv(s).price, up = f.target && p0 ? ((f.target - p0) / p0) * 100 : null;
+    const what = [f.sector, f.industry].filter(Boolean).join(", ");
+    const bits = [what, f.employees ? Math.round(f.employees).toLocaleString("en-US") + " employees" : "", f.country ? "based in " + esc(f.country) : ""].filter(Boolean);
+    return `<div class="fund-h"><h3>Fundamentals</h3>${bits.length ? `<p class="muted">${esc(bits.join(", ")).replace(/&amp;/g, "&")}</p>` : ""}${f.about ? `<p class="about">${esc(f.about)}</p>` : ""}</div>
+      <div class="fgrid">
+        ${grp("Valuation", [item("Market cap", money(f.marketCap, c)), item("P/E", ratio(f.pe), "last 12 months"), item("Forward P/E", ratio(f.fpe), "next 12 months"), item("Price to book", ratio(f.pb, 2)), item("Price to sales", ratio(f.ps, 2)), item("EV to EBITDA", ratio(f.evEbitda)), item("Earnings per share", f.eps != null ? fmt(f.eps, 2) : "—", "last 12 months"), item("Dividend yield", f.divYield ? pctPlain(f.divYield, 2) : "—", f.payout ? Math.round(f.payout) + "% of profit paid out" : "")])}
+        ${grp("Profitability", [item("Return on equity", pctPlain(f.roe)), item("Return on assets", pctPlain(f.roa)), item("Gross margin", pctPlain(f.grossMargin)), item("Operating margin", pctPlain(f.operatingMargin)), item("Net margin", pctPlain(f.profitMargin)), item("Beta", f.beta != null ? f.beta.toFixed(2) : "—", "swing vs the market")])}
+        ${grp("Growth", [item("Revenue growth", sg(f.revenueGrowth), "vs a year ago"), item("Earnings growth", sg(f.earningsGrowth), "vs a year ago"), item("Revenue", money(f.revenue, rc), "last 12 months"), item("Free cash flow", money(f.freeCashflow, rc), "last 12 months")])}
+        ${grp("Balance sheet", [item("Cash", money(f.cash, rc)), item("Debt", money(f.debt, rc)), item("Debt to equity", f.debtToEquity != null ? f.debtToEquity.toFixed(2) + "×" : "—"), item("Current ratio", f.currentRatio != null ? f.currentRatio.toFixed(2) : "—", "short-term assets ÷ liabilities")])}
+        ${f.rating || f.target ? grp("Analysts", [item("Consensus", RATING[f.rating] || "—", f.analysts ? f.analysts + " analysts" : ""), item("Average price target", f.target ? fmt(f.target) : "—", up != null ? `${up >= 0 ? "+" : "−"}${Math.abs(up).toFixed(1)}% from the current price` : "")]) : ""}
+      </div><p class="note">From Yahoo Finance. Company financials are reported in ${esc(rc)}.</p>`;
+  }
+
   function drawSvgChart(d, range) {
     const box = $("#m-chart"), pts = d.points || [];
     if (pts.length < 2) { box.innerHTML = '<div class="empty">Yahoo Finance has no history for this range. Try a longer one.</div>'; return; }
@@ -696,7 +870,11 @@
   let qt;
   $("#search").oninput = (e) => {
     clearTimeout(qt);
-    qt = setTimeout(() => { state.q = e.target.value.trim(); if (["map", "india"].includes(state.view)) setView("cards", { instant: true }); else renderMain(); }, 120);
+    qt = setTimeout(() => {
+      state.q = e.target.value.trim();
+      // a company name with no matching country jumps to the Stocks tab
+      if (state.view !== "stocks" && state.q.length >= 2 && !filtered().length && findStockMkt(state.q)) { state.stockMkt = findStockMkt(state.q); return setView("stocks", { instant: true }); }
+      if (["map", "india"].includes(state.view)) setView("cards", { instant: true }); else renderMain(); }, 120); // the Stocks tab filters its own companies
   };
   $("#open-only").onchange = (e) => { state.openOnly = e.target.checked; renderMain(); };
   $("#refresh").onclick = load;
@@ -725,7 +903,10 @@
     document.addEventListener("pointerover", (e) => {
       const a = e.target.closest("[data-sym]");
       clearTimeout(ht);
-      if (a) ht = setTimeout(() => getChart(a.dataset.sym, modal.range).catch(() => {}), 120);
+      if (a) ht = setTimeout(() => {
+        getChart(a.dataset.sym, modal.range).catch(() => {});
+        if (STOCK_SET.has(a.dataset.sym)) getFundDetail(a.dataset.sym).catch(() => {});
+      }, 120);
     });
   }
 
@@ -754,10 +935,10 @@
   window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => { moveInk(); if (state.view === "map") renderMain(); if (modal.sym) drawModal(); }, 200); });
 
   const rs = window.REF_SOURCES;
-  $("#ref-sources").textContent = `policy rates from ${rs.policy}; 10-year yields from ${rs.y10}; market sizes from ${rs.mcap}`;
+  $("#ref-sources").textContent = `policy rates from ${rs.policy}; 10-year yields from ${rs.y10}; market sizes from ${rs.mcap}; economy figures from the ${window.MACRO_SOURCE || "IMF"}`;
 
   const initial = location.hash.slice(1);
-  if (["map", "heat", "table", "india"].includes(initial)) setView(initial, { instant: true });
+  if (["map", "heat", "table", "stocks", "india"].includes(initial)) setView(initial, { instant: true });
   render();
   requestAnimationFrame(moveInk);
   if (document.fonts) document.fonts.ready.then(moveInk);
