@@ -818,6 +818,7 @@
       el.innerHTML = v != null ? pct(v) + el.dataset.sfx : "";
     });
     document.querySelectorAll("[data-sp]").forEach((el) => { el.innerHTML = spark(Qv(el.dataset.sp).spark, +el.dataset.w, +el.dataset.h); });
+    patchHoldings();
     document.querySelectorAll("[data-tile]").forEach((el) => {
       const q = Qv(el.dataset.tile);
       el.setAttribute("style", tileStyle(q.changePct, +(el.dataset.max || 3)));
@@ -1415,10 +1416,12 @@
       <div class="mine-h"><div><h2>My markets</h2><p class="muted">${watch.length ? `${watch.length} of ${MINE_MAX} picked. They also appear at the top of the homepage.` : "Pick the prices you check most: an index, a share, crude oil, gold, a currency or a coin."}</p></div>
         ${watch.length ? `<button class="btn ${showPick ? "" : "primary"}" id="mine-add" aria-expanded="${showPick}">${showPick ? "Done adding" : "Add markets"}</button>` : ""}</div>
       ${showPick ? pickerHTML() : ""}
+      ${holdSummary()}
       ${groups.map(([k, label, list]) => `<section class="mine-g"><h3>${label}</h3><div class="mine-grid">${list.map((w) => `
         <div class="mcard"><a href="${yurl(w.s)}" data-sym="${esc(w.s)}">
           <span class="wc-n">${esc(w.n || w.s)}</span><span class="wc-s">${esc((CAT_BY[w.s] && CAT_BY[w.s].sub) || w.sub || tickerOf(w.s))}</span>
           <span class="wc-row"><span class="wc-p">${px(w.s)}</span>${chipS(w.s)}</span>${sparkS(w.s, 220, 34)}</a>
+          <div class="mc-hold" data-pl="${esc(w.s)}">${plHTML(w)}</div>
           <button class="mc-x" data-unpick="${esc(w.s)}" aria-label="Remove ${esc(w.n || w.s)}" title="Remove"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 6 8 8M14 6l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
         </div>`).join("")}</div></section>`).join("")}
     </div>`;
@@ -1516,6 +1519,92 @@
     e.preventDefault(); setView(g.dataset.goview);
     const t = document.querySelector(".tabs-wrap");
     if (t) window.scrollTo({ top: t.getBoundingClientRect().top + window.scrollY - 8, behavior: REDUCED ? "auto" : "smooth" });
+  });
+
+  // ── holdings: the price someone bought at (and how many), to follow their gain or loss ──
+  const canHold = (w) => !["idx", "rate"].includes(kindOf(w));
+  const toINR = (v, cur) => {
+    if (v == null || !cur) return null;
+    if (cur === "INR") return v;
+    const usd = usdOf(v, cur), r = Qv("INR=X").price;
+    return usd != null && r ? usd * r : null;
+  };
+  const inr = (v) => (v == null ? "—" : (v < 0 ? "−" : "") + "₹" + Math.abs(v).toLocaleString("en-IN", { maximumFractionDigits: 0 }));
+  const signed = (s, v) => { if (v == null || !isFinite(v)) return "—"; const [a, b] = affix(s); return (v > 0 ? "+" : v < 0 ? "−" : "") + a + fmt(Math.abs(v)) + b; };
+  function plHTML(w) {
+    if (!w.buy) return canHold(w) ? `<button class="hold-add" data-hold="${esc(w.s)}">+ Add your buy price</button>` : "";
+    const p = Qv(w.s).price;
+    const ch = p != null ? ((p - w.buy) / w.buy) * 100 : null;
+    const amt = p != null && w.qty ? (p - w.buy) * w.qty : null;
+    return `<button class="hold" data-hold="${esc(w.s)}" title="Edit your buy price">
+      <span class="muted">Bought at ${money2(w.s, w.buy)}${w.qty ? ` × ${w.qty.toLocaleString("en-US", { maximumFractionDigits: 6 })}` : ""}</span>
+      <span class="${cls(ch)}"><b>${pct(ch)}</b>${amt != null ? ` ${signed(w.s, amt)}` : ""}</span></button>`;
+  }
+  function holdSummary() {
+    const hs = watch.filter((w) => w.buy && w.qty && canHold(w));
+    if (!hs.length) return "";
+    let cost = 0, now = 0, miss = 0;
+    hs.forEach((w) => {
+      const c = curOf(w.s), p = Qv(w.s).price;
+      const a = toINR(w.buy * w.qty, c), b = p != null ? toINR(p * w.qty, c) : null;
+      if (a == null || b == null) { miss++; return; }
+      cost += a; now += b;
+    });
+    const gain = now - cost, g = cost ? (gain / cost) * 100 : null;
+    return `<div class="hold-sum" data-holdsum>
+      <div><span class="muted">Invested</span><b>${inr(cost)}</b></div>
+      <div><span class="muted">Worth now</span><b>${inr(now)}</b></div>
+      <div><span class="muted">Gain or loss</span><b class="${cls(gain)}">${gain > 0 ? "+" : ""}${inr(gain)} <small>${pct(g)}</small></b></div>
+      <p class="muted">${hs.length - miss} holding${hs.length - miss === 1 ? "" : "s"} with a quantity, in rupees at today's exchange rates${miss ? `. ${miss} left out while their price loads.` : "."}</p>
+    </div>`;
+  }
+  function patchHoldings() {
+    if (state.view !== "mine") return;
+    document.querySelectorAll("[data-pl]").forEach((el) => { const w = watch.find((x) => x.s === el.dataset.pl); if (w) el.innerHTML = plHTML(w); });
+    const sum = document.querySelector("[data-holdsum]");
+    if (sum) sum.outerHTML = holdSummary() || "";
+  }
+  function holdBox(w) {
+    const [a, b] = affix(w.s);
+    const unit = (a.trim() || b.trim() || curOf(w.s) || "").trim();
+    const d = document.createElement("div");
+    d.className = "confirm"; d.setAttribute("role", "dialog"); d.setAttribute("aria-modal", "true"); d.setAttribute("aria-labelledby", "hb-t");
+    d.innerHTML = `<form class="cbox hbox" novalidate>
+      <h3 id="hb-t">${esc(w.n || w.s)}</h3>
+      <p>Enter what you paid, and how many you hold if you want the amount as well as the percentage. Only you can see this.</p>
+      <label>Buy price${unit ? ` (${esc(unit)})` : ""}<input name="buy" type="text" inputmode="decimal" autocomplete="off" value="${w.buy ?? ""}" placeholder="${Qv(w.s).price != null ? fmt(Qv(w.s).price).replace(/,/g, "") : ""}" /></label>
+      <label>Quantity <span class="muted">(optional)</span><input name="qty" type="text" inputmode="decimal" autocomplete="off" value="${w.qty ?? ""}" placeholder="e.g. 10" /></label>
+      <p class="auth-msg" hidden></p>
+      <div class="cbtns">${w.buy ? `<button type="button" class="btn" data-a="del">Remove buy price</button>` : ""}<button type="button" class="btn" data-a="no">Cancel</button><button type="submit" class="btn primary">Save</button></div>
+    </form>`;
+    document.body.appendChild(d);
+    const f = d.querySelector("form"), msg = d.querySelector(".auth-msg");
+    const close = () => { d.remove(); const b = document.querySelector(`[data-hold="${CSS.escape(w.s)}"]`); if (b) b.focus({ preventScroll: true }); };
+    const num = (v) => { v = String(v).replace(/[,\s₹$£€¥]/g, ""); return v === "" ? null : +v; };
+    const done = () => { store.set("wm-watch", watch); syncSave(); close(); if (state.view === "mine") { const y = window.scrollY; renderMain(); window.scrollTo(0, y); } };
+    f.onsubmit = (e) => {
+      e.preventDefault();
+      const buy = num(f.buy.value), qty = num(f.qty.value);
+      if (buy == null || !isFinite(buy) || buy <= 0) { msg.textContent = "Enter the price you paid, as a number above zero."; msg.hidden = false; return f.buy.focus(); }
+      if (qty != null && (!isFinite(qty) || qty <= 0)) { msg.textContent = "Quantity should be a number above zero, or leave it empty."; msg.hidden = false; return f.qty.focus(); }
+      w.buy = buy; if (qty) w.qty = qty; else delete w.qty;
+      done(); toast(`Saved your buy price for ${w.n || w.s}`);
+    };
+    d.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-a]");
+      if (e.target === d || (b && b.dataset.a === "no")) return close();
+      if (b && b.dataset.a === "del") { delete w.buy; delete w.qty; done(); toast("Buy price removed"); }
+    });
+    d.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } });
+    f.addEventListener("input", () => (msg.hidden = true));
+    setTimeout(() => f.buy.focus(), 30);
+  }
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-hold]");
+    if (!b) return;
+    e.preventDefault();
+    const w = watch.find((x) => x.s === b.dataset.hold);
+    if (w) holdBox(w);
   });
 
   // ── accounts ─────────────────────────────────────────────────────────────
