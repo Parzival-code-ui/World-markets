@@ -12,7 +12,10 @@ function send(res, code, body, ttl) {
   res.end(JSON.stringify(body));
 }
 
-module.exports = async function handler(req, res) {
+// signed-in visitors only (see _auth.js)
+const { requireUser } = require("./_auth");
+
+module.exports = requireUser(async function handler(req, res) {
   const qs = req.query || Object.fromEntries(new URL(req.url, "http://x").searchParams);
   const q = String(qs.q || "").trim().slice(0, 60);
   if (q.length < 2) return send(res, 400, { error: "type at least 2 characters" });
@@ -37,4 +40,4 @@ module.exports = async function handler(req, res) {
     } catch (e) { /* try the other host */ }
   }
   return send(res, 502, { error: "Yahoo search didn't answer" });
-};
+});

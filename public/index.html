@@ -39,6 +39,15 @@
         <label class="switch tp-cb"><input type="checkbox" id="cb-toggle" /><span class="track"><span class="thumb"></span></span><span>Blue and orange for up and down<small>Easier to tell apart with red-green colour blindness</small></span></label>
       </div>
     </div>
+    <div class="acct-wrap">
+      <button id="acct" class="acct" aria-haspopup="true" aria-expanded="false" aria-label="Sign in"><span class="acct-dot"></span></button>
+      <div id="acct-menu" class="acct-menu" hidden role="menu">
+        <p class="am-who"><b id="am-name"></b><span id="am-email"></span></p>
+        <button id="am-out" role="menuitem">Sign out</button>
+        <a href="privacy.html" role="menuitem">Privacy</a>
+        <button id="am-delete" class="am-danger" role="menuitem">Delete account</button>
+      </div>
+    </div>
     <button id="refresh" class="iconbtn" title="Refresh prices" aria-label="Refresh prices"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 10a6 6 0 1 1-1.8-4.3M16 3.5V7h-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
   </div>
 </header>
@@ -106,6 +115,28 @@
   </div>
 </div>
 
+<div id="auth" class="auth" hidden>
+  <div class="abox" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+    <button id="auth-close" class="iconbtn" aria-label="Close"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+    <h2 id="auth-title">Sign in</h2>
+    <p id="auth-why" class="auth-why"></p>
+    <div id="auth-alt">
+      <button id="auth-google" class="gbtn" type="button"><svg viewBox="0 0 18 18" aria-hidden="true"><path fill="#4285F4" d="M17.6 9.2c0-.6-.1-1.2-.2-1.7H9v3.3h4.8a4.1 4.1 0 0 1-1.8 2.7v2.2h2.9c1.7-1.6 2.7-3.9 2.7-6.5Z"/><path fill="#34A853" d="M9 18c2.4 0 4.5-.8 5.9-2.2l-2.9-2.2c-.8.5-1.8.9-3 .9-2.3 0-4.3-1.6-5-3.7H1v2.3A9 9 0 0 0 9 18Z"/><path fill="#FBBC05" d="M4 10.8a5.4 5.4 0 0 1 0-3.6V4.9H1a9 9 0 0 0 0 8.2l3-2.3Z"/><path fill="#EA4335" d="M9 3.6c1.3 0 2.5.5 3.4 1.3l2.6-2.6A9 9 0 0 0 1 4.9l3 2.3c.7-2.1 2.7-3.6 5-3.6Z"/></svg>Continue with Google</button>
+      <p class="auth-or"><span>or use your email</span></p>
+    </div>
+    <form id="auth-form" novalidate>
+      <label id="auth-name-row" hidden>Your name<input id="auth-name" type="text" autocomplete="name" maxlength="60" /></label>
+      <label>Email<input id="auth-email" type="email" autocomplete="email" inputmode="email" required /></label>
+      <label id="auth-pw-row">Password<input id="auth-pw" type="password" autocomplete="current-password" minlength="6" /></label>
+      <button type="button" id="auth-forgot" class="linkbtn auth-forgot">Forgot password?</button>
+      <p id="auth-msg" class="auth-msg" role="alert" hidden></p>
+      <button id="auth-submit" class="btn primary" type="submit">Sign in</button>
+    </form>
+    <p id="auth-switch" class="auth-switch"></p>
+    <p class="auth-fine">Your account keeps your watchlist and colour settings. <a href="privacy.html">Privacy</a></p>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
 <script src="data/markets.js"></script>
@@ -114,6 +145,8 @@
 <script src="data/macro.js"></script>
 <script src="data/holidays.js"></script>
 <script src="data/calendar.js"></script>
+<script src="data/firebase.js"></script>
+<script src="auth.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

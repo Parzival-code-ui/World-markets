@@ -5,6 +5,16 @@
   const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   const state = { quotes: {}, prev: {}, region: "All", view: "cards", q: "", openOnly: false, sort: { key: "changePct", dir: -1 }, stockSort: { key: "changePct", dir: -1 }, fetchedAt: null, mock: false, error: null, hadData: false, stale: false, fund: {}, fundT: {}, stockMkt: "us", stocksSort: { key: "marketCap", dir: -1 }, calKind: "all", calDays: 45 };
+  // accounts (auth.js): most of the site needs a signed-in visitor; the homepage stays open as a preview
+  const AU = window.WMAuth || { user: null, known: true, ready: Promise.resolve(null), onChange() {}, token: async () => null, load: async () => null, save: async () => {} };
+  const authed = () => !!AU.user;
+  const LOCKED = ["map", "heat", "table", "stocks", "cal", "india"];
+  async function authFetch(url) {
+    const t = await AU.token().catch(() => null);
+    const r = await fetch(url, t ? { headers: { Authorization: "Bearer " + t } } : {});
+    if (r.status === 401 && AU.user) toast("Your sign-in has expired. Sign in again to continue.");
+    return r;
+  }
   const store = { get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
   // last prices seen, so a return visit paints instantly
   const cached = store.get("wm-quotes");
@@ -211,13 +221,14 @@
   const fundBusy = new Set();
   let fundErr = null;
   function ensureFund(list) {
+    if (!authed()) return;
     const all = list.filter((s) => !fundBusy.has(s) && !(state.fundT[s] && Date.now() - state.fundT[s] < 3600e3));
     for (let i = 0; i < all.length; i += 50) fundBatch(all.slice(i, i + 50)); // the service takes up to 60 at a time
   }
   function fundBatch(need) {
     if (!need.length) return;
     need.forEach((s) => fundBusy.add(s));
-    fetch("/api/fundamentals?symbols=" + encodeURIComponent(need.join(","))).then(async (r) => {
+    authFetch("/api/fundamentals?symbols=" + encodeURIComponent(need.join(","))).then(async (r) => {
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || "the service answered " + r.status);
       Object.assign(state.fund, j.fundamentals || {});
@@ -236,7 +247,7 @@
   function getFundDetail(s) {
     const hit = fundDetail[s];
     if (hit && Date.now() - hit.t < 3600e3) return hit.p;
-    const p = fetch("/api/fundamentals?symbol=" + encodeURIComponent(s)).then(async (r) => {
+    const p = authFetch("/api/fundamentals?symbol=" + encodeURIComponent(s)).then(async (r) => {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "HTTP " + r.status);
       return d;
@@ -367,8 +378,8 @@
   function renderWatch() {
     const el = $("#watch");
     if (!el) return;
-    el.hidden = !watch.length;
-    if (!watch.length) { el.innerHTML = ""; return; }
+    el.hidden = !watch.length || !authed();
+    if (el.hidden) { el.innerHTML = ""; return; }
     el.innerHTML = `<div class="watch-h"><h2>Your watchlist</h2><p class="muted">Tap the star on any chart to add or remove.</p></div>
       <div class="watch-row">${watch.map((w) => `<a class="wcard" href="${yurl(w.s)}" data-sym="${esc(w.s)}">
         <span class="wc-n">${esc(w.n || w.s)}</span><span class="wc-s">${esc(tickerOf(w.s))}</span>
@@ -376,6 +387,7 @@
   }
   const isWatched = (s) => watch.some((w) => w.s === s);
   function toggleWatch(s) {
+    if (!authed()) return openAuth("watch");
     const i = watch.findIndex((w) => w.s === s);
     if (i >= 0) { watch.splice(i, 1); toast(`Removed ${NAMES[s] ? NAMES[s].name : s} from your watchlist`); }
     else {
@@ -386,6 +398,7 @@
       if (!state.quotes[s]) quoteFor([s]).then(renderWatch);
     }
     store.set("wm-watch", watch);
+    syncSave();
     renderWatch();
     starBtn();
   }
@@ -695,6 +708,7 @@
   function renderMain() {
     const main = $("#main");
     $("#filters").hidden = ["map", "india", "stocks", "cal"].includes(state.view);
+    if (LOCKED.includes(state.view) && !authed()) return renderLocked(main);
     if (state.view === "india") return renderIndia(main);
     if (state.view === "stocks") return renderStocks(main);
     if (state.view === "cal") return renderCal(main);
@@ -799,6 +813,7 @@
   // chart overlays the visitor has switched on, remembered in this browser
   const copts = Object.assign({ vol: true, ma50: true, ma200: true }, store.get("wm-copts") || {});
   function openChart(s, viaKeyboard, keepCmp) {
+    if (!authed()) { pendingChart = { s, range: modal.range, cmp: keepCmp ? modal.cmp : null }; return openAuth("chart", NAMES[s] ? NAMES[s].name : tickerOf(s)); }
     if (modal.sym !== s && !keepCmp) modal.cmp = null;
     modal.sym = s; modal.lastFocus = document.activeElement;
     const m = $("#modal"); m.hidden = false; requestAnimationFrame(() => m.classList.add("in"));
@@ -829,7 +844,7 @@
   function getChart(s, range) {
     const key = s + "|" + range, hit = chartCache[key];
     if (hit && Date.now() - hit.t < 60_000) return hit.p;
-    const p = fetch(`/api/chart?symbol=${encodeURIComponent(s)}&range=${range}`).then(async (r) => {
+    const p = authFetch(`/api/chart?symbol=${encodeURIComponent(s)}&range=${range}`).then(async (r) => {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "HTTP " + r.status);
       return d;
@@ -1150,11 +1165,11 @@
     e.stopPropagation();
     const b = e.target.closest("[data-theme-pick]");
     if (!b) return;
-    store.set("wm-theme", b.dataset.themePick);
+    store.set("wm-theme", b.dataset.themePick); syncSave();
     const go = () => { applyTheme(); render(); };
     if (document.startViewTransition && !REDUCED) document.startViewTransition(go); else go();
   };
-  $("#cb-toggle").onchange = (e) => { store.set("wm-cb", e.target.checked); applyTheme(); render(); };
+  $("#cb-toggle").onchange = (e) => { store.set("wm-cb", e.target.checked); syncSave(); applyTheme(); render(); };
   document.addEventListener("click", (e) => { if (!$("#theme-pop").hidden && !e.target.closest("#theme-pop")) toggleThemes(false); });
   dark.addEventListener("change", () => { if ((store.get("wm-theme") || "auto") === "auto") { applyTheme(); render(); } });
   applyTheme();
@@ -1210,13 +1225,14 @@
   const remoteCache = {};
   let remoteT;
   function remoteFor(q) {
+    if (!authed()) return "signin";
     q = q.trim().toLowerCase();
     if (q.length < 2) return [];
     if (remoteCache[q]) return remoteCache[q];
     clearTimeout(remoteT);
     remoteT = setTimeout(() => {
       remoteCache[q] = "loading";
-      fetch("/api/search?q=" + encodeURIComponent(q)).then((r) => r.json()).then((j) => { remoteCache[q] = j.results || []; })
+      authFetch("/api/search?q=" + encodeURIComponent(q)).then((r) => r.json()).then((j) => { remoteCache[q] = j.results || []; })
         .catch(() => { remoteCache[q] = []; })
         .finally(() => { if (sbox.value.trim().toLowerCase() === q && document.activeElement === sbox) drawPop(); });
     }, 220);
@@ -1241,7 +1257,8 @@
     let html = local.map(row).join("");
     if (extra.length) html += `<p class="sp-sec">More from Yahoo Finance</p>` + extra.map((it, j) => row(it, local.length + j)).join("");
     else if (rem === "loading") html += `<p class="sp-sec">Searching every market…</p>`;
-    if (!hits.length && rem !== "loading") html = `<p class="sp-empty">Nothing matches “${esc(q)}”. Try a country, an index, a company or a ticker like TCS.NS.</p>`;
+    else if (rem === "signin" && q.length > 1) html += `<button class="sp-item sp-signin" data-signin="search"><span class="sp-t"><b>Sign in to search every listed company</b><small>Free account, Google or email</small></span></button>`;
+    if (!hits.length && rem !== "loading" && rem !== "signin") html = `<p class="sp-empty">Nothing matches “${esc(q)}”. Try a country, an index, a company or a ticker like TCS.NS.</p>`;
     spop.innerHTML = html;
     placePop();
     spop.hidden = false; sbox.setAttribute("aria-expanded", "true");
@@ -1304,7 +1321,7 @@
   // overlays and comparison under the chart
   $("#m-tools").addEventListener("click", (e) => {
     const o = e.target.closest("[data-opt]");
-    if (o) { copts[o.dataset.opt] = !copts[o.dataset.opt]; store.set("wm-copts", copts); return drawModal(); }
+    if (o) { copts[o.dataset.opt] = !copts[o.dataset.opt]; store.set("wm-copts", copts); syncSave(); return drawModal(); }
     if (e.target.closest("[data-cmp-open]")) {
       const pick = $("#cmp-pick"), btn = e.target.closest("[data-cmp-open]");
       pick.hidden = !pick.hidden; btn.setAttribute("aria-expanded", !pick.hidden);
@@ -1333,6 +1350,221 @@
     if (e.key === "/" && document.activeElement.tagName !== "INPUT") { e.preventDefault(); $("#search").focus(); }
   });
 
+  // ── accounts ─────────────────────────────────────────────────────────────
+  let pendingChart = null, authMode = "in", authWhy = null;
+  const WHY = {
+    chart: (n) => `Sign in to open the chart${n ? " for " + n : ""}.`,
+    view: () => "Sign in to see this part of World Markets.",
+    watch: () => "Sign in to keep a watchlist.",
+    search: () => "Sign in to search every listed company.",
+  };
+  const LOCK_COPY = {
+    map: ["World map", "Every market on one map, with a 24-hour timeline of trading sessions."],
+    heat: ["Heatmap", "Every index, shaded by today's move, grouped by region."],
+    table: ["Table", "All markets in one sortable table: price, day, month and year changes."],
+    stocks: ["Stocks", "The largest companies in seven markets, with valuations, dividends and results dates."],
+    cal: ["Calendar", "Central bank meetings, inflation releases, company results and market holidays."],
+    india: ["India", "Nifty, Sensex, sector indices and the top 50 companies with valuation columns."],
+  };
+  function renderLocked(main) {
+    const [t, d] = LOCK_COPY[state.view] || ["This view", ""];
+    main.innerHTML = `<div class="locked-panel">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8.5 10.5V7.8a3.5 3.5 0 0 1 7 0v2.7" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+      <h2>${esc(t)}</h2><p>${esc(d)}</p>
+      ${AU.known ? `<button class="btn primary" data-signin="view">Sign in to continue</button><p class="muted small">Free. Use your Google account or an email and password.</p>`
+        : `<p class="muted small">Checking whether you're signed in…</p>`}
+    </div>`;
+  }
+  const authEl = $("#auth");
+  let authFocus = null;
+  function openAuth(why, name) {
+    authWhy = why;
+    $("#auth-why").textContent = AU.unavailable || (WHY[why] || WHY.view)(name);
+    setAuthMode("in");
+    authFocus = document.activeElement;
+    authEl.hidden = false; requestAnimationFrame(() => authEl.classList.add("in"));
+    document.body.classList.add("locked");
+    setTimeout(() => $("#auth-google").focus({ preventScroll: true }), 60);
+  }
+  function closeAuth(keepPending) {
+    if (authEl.hidden) return;
+    if (!keepPending) pendingChart = null;
+    authEl.classList.remove("in");
+    setTimeout(() => { authEl.hidden = true; }, REDUCED ? 0 : 200);
+    if (!modal.sym) document.body.classList.remove("locked");
+    if (authFocus && authFocus.focus) authFocus.focus({ preventScroll: true });
+  }
+  function setAuthMode(m) {
+    authMode = m;
+    const f = $("#auth-form");
+    f.dataset.mode = m;
+    $("#auth-title").textContent = { in: "Sign in", up: "Create your account", reset: "Reset your password" }[m];
+    $("#auth-name-row").hidden = m !== "up";
+    $("#auth-pw-row").hidden = m === "reset";
+    $("#auth-pw").autocomplete = m === "up" ? "new-password" : "current-password";
+    $("#auth-submit").textContent = { in: "Sign in", up: "Create account", reset: "Send reset link" }[m];
+    $("#auth-switch").innerHTML = m === "up" ? `Already have an account? <button type="button" class="linkbtn" data-mode="in">Sign in</button>`
+      : m === "reset" ? `<button type="button" class="linkbtn" data-mode="in">Back to sign in</button>`
+      : `New here? <button type="button" class="linkbtn" data-mode="up">Create an account</button>`;
+    $("#auth-forgot").hidden = m !== "in";
+    $("#auth-alt").hidden = m === "reset";
+    authMsg("");
+  }
+  function authMsg(t, ok) { const el = $("#auth-msg"); el.textContent = t; el.className = "auth-msg" + (ok ? " ok" : ""); el.hidden = !t; }
+  const ERR = {
+    "auth/invalid-email": "That email address doesn't look right.",
+    "auth/invalid-credential": "That email and password don't match an account. Check them, or create an account.",
+    "auth/wrong-password": "That email and password don't match an account. Check them, or create an account.",
+    "auth/user-not-found": "That email and password don't match an account. Check them, or create an account.",
+    "auth/email-already-in-use": "There's already an account with that email. Sign in instead, or reset the password.",
+    "auth/weak-password": "Use a password of at least 6 characters.",
+    "auth/missing-password": "Enter your password.",
+    "auth/too-many-requests": "Too many tries. Wait a few minutes, or reset your password.",
+    "auth/network-request-failed": "No connection to the sign-in service. Check your internet and try again.",
+    "auth/popup-closed-by-user": "",
+    "auth/cancelled-popup-request": "",
+    "auth/unauthorized-domain": "Sign-in isn't allowed on this web address yet. The site owner needs to add it in Firebase.",
+    "auth/operation-not-allowed": "This sign-in method isn't switched on yet.",
+    "auth/account-exists-with-different-credential": "That email already signs in another way. Use email and password, or the method you used before.",
+    "auth/requires-recent-login": "For safety, sign out and back in, then try again.",
+  };
+  const errText = (e) => (e && e.code in ERR ? ERR[e.code] : (e && e.message) || "Something went wrong. Try again.");
+  async function busy(btn, fn) {
+    if (AU.unavailable) return authMsg(AU.unavailable);
+    btn.disabled = true; authEl.classList.add("busy");
+    try { await fn(); } catch (e) { authMsg(errText(e)); }
+    btn.disabled = false; authEl.classList.remove("busy");
+  }
+  $("#auth-google").onclick = (e) => busy(e.currentTarget, () => AU.signInGoogle());
+  $("#auth-form").onsubmit = (e) => {
+    e.preventDefault();
+    const email = $("#auth-email").value.trim(), pw = $("#auth-pw").value, name = $("#auth-name").value.trim();
+    if (!email) return authMsg("Enter your email address.");
+    if (authMode === "reset") return busy($("#auth-submit"), async () => { await AU.resetPassword(email); authMsg(`If there's an account for ${email}, a reset link is on its way. Check your inbox.`, true); });
+    if (!pw) return authMsg("Enter your password.");
+    busy($("#auth-submit"), () => (authMode === "up" ? AU.signUpEmail(email, pw, name) : AU.signInEmail(email, pw)));
+  };
+  $("#auth-form").addEventListener("input", () => authMsg(""));
+  authEl.addEventListener("click", (e) => {
+    if (e.target === authEl || e.target.closest("#auth-close")) return closeAuth();
+    const m = e.target.closest("[data-mode]");
+    if (m) { setAuthMode(m.dataset.mode); (m.dataset.mode === "up" ? $("#auth-name") : $("#auth-email")).focus(); }
+    if (e.target.closest("#auth-forgot")) { setAuthMode("reset"); $("#auth-email").focus(); }
+  });
+  authEl.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.stopPropagation(); return closeAuth(); }
+    if (e.key === "Tab") { // keep focus inside the sheet
+      const f = [...authEl.querySelectorAll("button:not([disabled]), input:not([hidden]), a[href]")].filter((x) => x.offsetParent);
+      if (!f.length) return;
+      if (e.shiftKey && document.activeElement === f[0]) { e.preventDefault(); f[f.length - 1].focus(); }
+      else if (!e.shiftKey && document.activeElement === f[f.length - 1]) { e.preventDefault(); f[0].focus(); }
+    }
+  });
+  // any "sign in" button anywhere on the page
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-signin]");
+    if (!b) return;
+    e.preventDefault(); closePop();
+    openAuth(b.dataset.signin);
+  });
+
+  // header account button and menu
+  const acct = $("#acct"), amenu = $("#acct-menu");
+  const initials = (u) => (u.name || u.email || "?").trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+  function renderAcct() {
+    const u = AU.user;
+    acct.classList.toggle("signed", !!u);
+    acct.setAttribute("aria-label", u ? "Your account" : "Sign in");
+    acct.innerHTML = !AU.known ? `<span class="acct-dot"></span>`
+      : u ? (u.photo ? `<img src="${esc(u.photo)}" alt="" referrerpolicy="no-referrer" />` : `<span class="acct-ini">${esc(initials(u))}</span>`)
+      : `<span>Sign in</span>`;
+    if (u) {
+      $("#am-name").textContent = u.name;
+      $("#am-email").textContent = u.email;
+    } else toggleAcct(false);
+  }
+  function toggleAcct(on) {
+    amenu.hidden = !on; acct.setAttribute("aria-expanded", on);
+    if (on) amenu.querySelector("button").focus();
+  }
+  acct.onclick = (e) => { e.stopPropagation(); if (!AU.known) return; if (!AU.user) return openAuth("view"); toggleAcct(amenu.hidden); };
+  document.addEventListener("click", (e) => { if (!amenu.hidden && !e.target.closest("#acct-menu")) toggleAcct(false); });
+  amenu.addEventListener("keydown", (e) => { if (e.key === "Escape") { toggleAcct(false); acct.focus(); } });
+  $("#am-out").onclick = async () => { toggleAcct(false); await AU.signOut(); toast("You're signed out"); };
+  $("#am-delete").onclick = async () => {
+    toggleAcct(false);
+    const sure = await confirmBox("Delete your account?", "This removes your account, your watchlist and your saved settings from World Markets. It can't be undone.", "Delete account");
+    if (!sure) return;
+    try { await AU.deleteAccount(); toast("Your account has been deleted"); }
+    catch (e) { toast(e && e.code === "auth/requires-recent-login" ? "For safety, sign out and back in, then delete the account." : errText(e)); }
+  };
+  // a small in-page confirm, so nothing blocks the page
+  function confirmBox(title, body, yes) {
+    return new Promise((done) => {
+      const d = document.createElement("div");
+      d.className = "confirm"; d.setAttribute("role", "alertdialog"); d.setAttribute("aria-modal", "true");
+      d.innerHTML = `<div class="cbox"><h3>${esc(title)}</h3><p>${esc(body)}</p><div class="cbtns"><button class="btn" data-a="0">Keep my account</button><button class="btn danger" data-a="1">${esc(yes)}</button></div></div>`;
+      document.body.appendChild(d);
+      const end = (v) => { d.remove(); done(v); };
+      d.addEventListener("click", (e) => { const b = e.target.closest("[data-a]"); if (b) end(b.dataset.a === "1"); else if (e.target === d) end(false); });
+      d.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); end(false); } });
+      d.querySelector("[data-a='0']").focus();
+    });
+  }
+
+  // watchlist and settings live in the account, so they follow the visitor to other devices
+  let saveT, syncing = false;
+  function syncSave() {
+    if (!authed() || syncing) return;
+    clearTimeout(saveT);
+    saveT = setTimeout(() => AU.save({ watch, theme: store.get("wm-theme") || "auto", cb: !!store.get("wm-cb"), copts }).catch((e) => console.warn("save failed", e)), 800);
+  }
+  async function pullSettings() {
+    let d = null;
+    try { d = await AU.load(); } catch (e) { console.warn("load failed", e); }
+    syncing = true;
+    if (d) {
+      if (Array.isArray(d.watch)) {
+        const seen = new Set(d.watch.map((w) => w.s));
+        const merged = [...d.watch, ...watch.filter((w) => !seen.has(w.s))].filter((w) => w && w.s).slice(0, 30);
+        watch.splice(0, watch.length, ...merged);
+        watch.forEach((w) => { NAMES[w.s] = NAMES[w.s] || { name: w.n || w.s, sub: w.sub || "" }; if (w.stock) STOCK_SET.add(w.s); });
+        store.set("wm-watch", watch);
+      }
+      if (d.theme) store.set("wm-theme", d.theme);
+      if (typeof d.cb === "boolean") store.set("wm-cb", d.cb);
+      if (d.copts) Object.assign(copts, d.copts), store.set("wm-copts", copts);
+      applyTheme();
+    }
+    syncing = false;
+    if (!d || watch.length !== (d.watch || []).length) syncSave(); // first sign-in, or local stars to add
+    const missing = watch.map((w) => w.s).filter((s) => !state.quotes[s]);
+    if (missing.length) quoteFor(missing).then(renderWatch);
+    render();
+  }
+  let lastUid;
+  function onAuth(u) {
+    const uid = u ? u.uid : null;
+    renderAcct();
+    if (uid === lastUid && lastUid !== undefined) return render();
+    const first = lastUid === undefined;
+    lastUid = uid;
+    if (u) {
+      const go = pendingChart;
+      closeAuth(true); pendingChart = null;
+      if (!first) toast(`Signed in as ${u.name}`);
+      pullSettings();
+      if (go) { modal.range = go.range || modal.range; modal.cmp = go.cmp; openChart(go.s, false, !!go.cmp); }
+      else if (first) applyHash(true);
+    } else {
+      if (!first) { watch.splice(0); store.set("wm-watch", []); } // signing out clears this device
+      if (modal.sym) closeChart();
+      render();
+      if (first) applyHash(true);
+    }
+  }
+  renderAcct();
+
   // load a chart while the pointer rests on its row, so the click opens instantly
   if (window.matchMedia("(hover: hover)").matches) {
     let ht;
@@ -1340,8 +1572,8 @@
       const a = e.target.closest("[data-sym]");
       clearTimeout(ht);
       if (a) ht = setTimeout(() => {
-        getChart(a.dataset.sym, modal.range).catch(() => {});
-        if (STOCK_SET.has(a.dataset.sym)) getFundDetail(a.dataset.sym).catch(() => {});
+        if (authed()) getChart(a.dataset.sym, modal.range).catch(() => {});
+        if (authed() && STOCK_SET.has(a.dataset.sym)) getFundDetail(a.dataset.sym).catch(() => {});
       }, 120);
     });
   }
@@ -1392,7 +1624,8 @@
   }
   window.addEventListener("hashchange", () => applyHash(false));
   render();
-  applyHash(true);
+  if (AU.known) applyHash(true); else { const v = readHash().view; if (v !== state.view) setView(v, { instant: true }); }
+  AU.onChange(onAuth);
   requestAnimationFrame(moveInk);
   if (document.fonts) document.fonts.ready.then(moveInk);
   load();
