@@ -159,7 +159,7 @@
 
   // stocks outside the always-loaded set: fetched only while their market is open in the Stocks tab
   const stockList = () => (SM.find((m) => m.id === state.stockMkt) || SM[0]).stocks;
-  const extraSyms = () => (state.view === "stocks" ? stockList().map((x) => x[0]).filter((s) => !symbols.has(s)) : []);
+  const extraSyms = () => (state.view === "stocks" ? stockList().map((x) => x[0]) : state.view === "india" ? (IN.adrs || []).flatMap(([a, n]) => [a, n]) : []).filter((s) => !symbols.has(s));
   const extraBusy = new Set();
   async function loadExtra() {
     const need = extraSyms().filter((s) => !state.quotes[s] && !extraBusy.has(s));
@@ -170,7 +170,7 @@
       Object.assign(state.quotes, j.quotes || {});
     } catch (e) { /* the next minute's refresh includes them */ }
     need.forEach((s) => extraBusy.delete(s));
-    if (state.view === "stocks") renderMain();
+    if (["stocks", "india"].includes(state.view)) renderMain();
   }
 
   // ── fundamentals ─────────────────────────────────────────────────────────
@@ -235,7 +235,7 @@
     if (!e) return "";
     const it = (k, v, sign, sfx = "%") => `<div><dt>${k}</dt><dd>${v == null ? "—" : (sign && v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(1) + sfx}</dd></div>`;
     const gdp = e[4] >= 1000 ? "$" + (e[4] / 1000).toFixed(1) + " trillion" : "$" + Math.round(e[4]) + " billion";
-    return `<div class="econ" title="${esc(window.MACRO_SOURCE || "IMF")}"><p class="econ-h">Economy in 2026<span>${gdp} GDP</span></p>
+    return `<div class="econ" title="${esc(window.MACRO_SOURCE || "IMF")}"><p class="econ-h">Economy in 2026<span>${gdp} GDP</span></p><p class="econ-src muted">IMF estimates, World Economic Outlook, October 2026</p>
       <dl>${it("GDP growth", e[0], 1)}${it("Inflation", e[1])}${it("Unemployment", e[2])}${it("Debt to GDP", e[3], 0)}</dl></div>`;
   }
   const econLine = (id) => { const e = MAC[id]; return e ? `<span class="muted">Economy: ${e[0] > 0 ? "+" : ""}${e[0].toFixed(1)}% growth, ${e[1].toFixed(1)}% inflation (IMF, 2026)</span>` : ""; };
@@ -518,23 +518,58 @@
   }
 
   // ── India ────────────────────────────────────────────────────────────────
+  // what happened elsewhere since India last traded, the usual "global cues" before the open
+  function cuesHTML() {
+    const row = (s, n, note) => { const q = Qv(s); return `<a class="cue" href="${yurl(s)}" data-sym="${esc(s)}"><span>${esc(n)}</span><span class="cue-v">${px(s)}</span>${chipS(s, s === "INR=X")}${note ? `<small class="muted">${note}</small>` : ""}</a>`; };
+    const usSt = status(byId.us), asia = ["jp", "hk"].map((id) => byId[id]).filter(Boolean);
+    const usNote = usSt.kind === "open" ? "trading now" : "last session";
+    return `<section class="panel"><div class="panel-h"><div><h2>Global cues</h2><p class="muted">What moved elsewhere since India last traded. Wall Street closes at about 1:30 or 2:30 am in India, depending on US daylight saving.</p></div></div>
+      <div class="cues">
+        ${row("^GSPC", "S&P 500", usNote)}${row("^IXIC", "Nasdaq", usNote)}${row("^DJI", "Dow Jones", usNote)}
+        ${asia.map((c) => row(c.indices[0][0], c.indices[0][1], status(c).kind === "open" ? "trading now" : "")).join("")}
+        ${row("BZ=F", "Brent crude")}${row("INR=X", "Dollar in rupees", "green = rupee stronger")}${row("^TNX", "US 10-year yield")}${row("DX-Y.NYB", "Dollar index")}
+      </div></section>`;
+  }
+  // ADRs: the same company's shares in New York, turned into rupees and compared with the NSE price
+  function adrHTML() {
+    const usdinr = Qv("INR=X").price;
+    const rows = (IN.adrs || []).map(([a, n, name]) => {
+      const qa = Qv(a), qn = Qv(n);
+      let prem = null, ratio = null;
+      if (qa.price && qn.price && usdinr) {
+        const raw = (qa.price * usdinr) / qn.price;
+        ratio = Math.max(1, Math.round(raw)); // shares per ADR, read off the prices themselves
+        prem = raw / ratio - 1;
+        if (ratio > 10) { ratio = null; prem = null; } // prices that don't line up: show nothing rather than nonsense
+      }
+      return `<tr><td>${sym(a, esc(name))}<small class="muted"> ${esc(a)}${ratio > 1 ? `, 1 ADR = ${ratio} shares` : ""}</small></td><td class="r">${px(a)}</td><td class="r">${chipS(a)}</td><td class="r">${px(n)}</td><td class="r">${chipS(n)}</td>
+        <td class="r"><span class="${prem == null ? "na" : ""}" title="ADR price in rupees compared with the NSE price">${prem == null ? "—" : (prem >= 0 ? "+" : "−") + Math.abs(prem * 100).toFixed(1) + "%"}</span></td></tr>`;
+    }).join("");
+    return `<section class="panel"><div class="panel-h"><div><h2>Indian companies in New York</h2><p class="muted">ADRs trade after India closes, so their move is an early hint for the next day. Premium is the ADR price in rupees against the NSE price.</p></div></div>
+      <div class="tscroll"><table class="t"><thead><tr><th>Company</th><th class="r">New York</th><th class="r">Today</th><th class="r">NSE</th><th class="r">Today</th><th class="r">Premium</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+  }
   function renderIndia(el) {
     const Q = (s) => state.quotes[s] || {};
     const head = IN.headline.map(([s, n]) => {
       const inr = s === "INR=X";
       return `<a class="itile" href="${yurl(s)}" data-sym="${esc(s)}"><span class="it-n">${esc(n)}</span>
-        <span class="it-p">${inr ? "₹" : ""}${px(s)}</span>
+        <span class="it-p">${px(s)}</span>
         <span class="it-c">${chipS(s, inr)}${pctT(s, "change1mPct", " this month", "muted", true)}</span>
+        ${RET.r[s] && !inr ? `<span class="it-r muted">${["ytd", "y1"].map((p) => RET.r[s][p] != null ? `<span class="${cls(RET.r[s][p])}">${pct(RET.r[s][p] * 100)}</span> ${p === "ytd" ? "this year" : "in a year"}` : "").filter(Boolean).join(", ")}</span>` : ""}
         ${sparkS(s, 220, 34)}</a>`;
     }).join("");
     const secs = IN.sectors.map(([s, n]) => ({ s, n, q: Q(s) })).sort((a, b) => (b.q.changePct ?? -1e9) - (a.q.changePct ?? -1e9));
     const sectorHtml = secs.map((r) => `<a class="tile" href="${yurl(r.s)}" data-sym="${esc(r.s)}" data-tile="${esc(r.s)}" data-max="2" style="${tileStyle(r.q.changePct, 2)}"><span class="tn">${esc(r.n)}</span><span class="tp">${pct(r.q.changePct)}</span><span class="tc">${r.q.change1mPct != null ? pct(r.q.change1mPct) + " this month" : ""}</span></a>`).join("");
     ensureFund(IN.stocks.map((x) => x[0]));
+    ensureReturns(IN.headline.map((x) => x[0]));
+    loadExtra();
     const s = status(byId.in);
     el.innerHTML = `
       <section class="in-hero"><div><h2>India today</h2><p class="muted">${s.holiday ? `NSE and BSE are <b class="closed">closed today</b> for ${esc(s.holiday)}. They open in ${dur(s.mins)}.` : `NSE and BSE are <b class="${s.kind}">${s.text.toLowerCase()}</b>. ${s.sub}.`}</p></div>
         <div class="breadth" id="breadth" title="How many of the 30 largest stocks are up or down today">${breadthHTML()}</div></section>
       <div class="itiles">${head}</div>
+      ${cuesHTML()}
+      ${adrHTML()}
       ${econHTML("in")}
       <section class="panel"><div class="panel-h"><div><h2>Sectors</h2><p class="muted">Sorted by today's move. Click a sector to see its chart.</p></div></div><div class="heat sectors">${sectorHtml}</div></section>
       <section class="panel"><div class="panel-h"><div><h2>Largest companies</h2><p class="muted">30 of the biggest Nifty 50 stocks. Click a column to sort, or a company for its full fundamentals.</p></div></div>
@@ -567,7 +602,7 @@
     return `<div class="tscroll"><table class="t stk"><thead><tr>${th("n", "Company")}${th("sec", "Sector")}${th("price", priceLabel, 1)}${th("changePct", "Today", 1)}${th("change1mPct", "Month", 1)}${th("pe", "P/E", 1, "Price to earnings, last 12 months")}${th("marketCap", "Market cap", 1)}${th("divYield", "Dividend", 1, "Dividend yield, last 12 months")}<th class="r">Trend</th></tr></thead><tbody>
       ${rows.map((r) => `<tr><td>${sym(r.s, `<b>${esc(r.n)}</b><small>${esc(tickerOf(r.s))}</small>`)}</td><td class="muted">${esc(r.sec)}</td>
         <td class="r">${px(r.s)}</td><td class="r">${chipS(r.s)}</td><td class="r">${pctT(r.s, "change1mPct")}</td>
-        <td class="r">${fc(r, ratio(r.f && r.f.pe))}</td><td class="r">${fc(r, money(r.f && r.f.marketCap, r.f && r.f.currency))}</td><td class="r">${fc(r, r.f && r.f.divYield ? pctPlain(r.f.divYield, 2) : "—")}</td><td class="r">${sparkS(r.s)}</td></tr>`).join("")}
+        <td class="r">${fc(r, ratio(r.f && r.f.pe))}</td><td class="r"${r.f && r.f.mcEst ? ' title="Estimated: profit ÷ earnings per share × price"' : ""}>${fc(r, (r.f && r.f.mcEst ? "≈ " : "") + money(r.f && r.f.marketCap, r.f && r.f.currency))}</td><td class="r">${fc(r, r.f && r.f.divYield ? pctPlain(r.f.divYield, 2) : "—")}</td><td class="r">${sparkS(r.s)}</td></tr>`).join("")}
       </tbody></table></div>`;
   }
   const fundNote = () => fundErr
@@ -692,21 +727,67 @@
       main.innerHTML = `<section class="panel"><div class="panel-h"><div><h2>Every index, strongest to weakest</h2><p class="muted">Deeper green or red means a bigger move today.</p></div><div class="legend" aria-hidden="true"><span>−3%</span><i></i><span>+3%</span></div></div>
         <div class="heat">${rows.map((r) => `<a class="tile" href="${yurl(r.s)}" data-sym="${esc(r.s)}" data-tile="${esc(r.s)}" style="${tileStyle(r.q.changePct)}"><span class="tn">${esc(r.n)}</span><span class="tp">${pct(r.q.changePct)}</span><span class="tc">${r.c.flag} ${esc(r.c.name)}</span></a>`).join("")}</div></section>`;
     } else {
-      const k = state.sort.key, d = state.sort.dir;
-      const val = (r) => k === "name" ? r.n : k === "country" ? r.c.name : k === "status" ? status(r.c).kind : r.q[k];
-      const rows = allRows(list).sort((a, b) => { const x = val(a), y = val(b); if (x == null) return 1; if (y == null) return -1; return (typeof x === "string" ? x.localeCompare(y) : x - y) * d; });
-      const th = (key, label, r) => `<th class="${r ? "r" : ""}" aria-sort="${k === key ? (d > 0 ? "ascending" : "descending") : "none"}"><button data-k="${key}">${label}<i>${k === key ? (d > 0 ? "↑" : "↓") : ""}</i></button></th>`;
-      main.innerHTML = `<section class="panel"><div class="tscroll"><table class="t"><thead><tr>${th("country", "Country")}${th("name", "Index")}${th("price", "Level", 1)}${th("changePct", "Today", 1)}${th("change1mPct", "Month", 1)}${th("status", "Market")}<th class="r">Trend</th></tr></thead><tbody>
+      const all = allRows(list);
+      ensureReturns([...all.map((r) => r.s), ...new Set(M.map((c) => fx(c.ccy)).filter(Boolean)), "INR=X"]);
+      const P = [["d", "Today"], ["m1", "1 month"], ["ytd", "This year"], ["y1", "1 year"], ["y3", "3 years", 3], ["y5", "5 years", 5]];
+      const rv = (r, p, n) => { const v = retOf(r.s, p, r.c.ccy); return n ? perYear(v, n) : v; };
+      const k = state.sort.key === "changePct" ? "d" : state.sort.key, d = state.sort.dir;
+      const val = (r) => k === "name" ? r.n : k === "country" ? r.c.name : k === "status" ? status(r.c).kind : k === "price" ? r.q.price : (() => { const pp = P.find((x) => x[0] === k); return pp ? rv(r, pp[0], pp[2]) : null; })();
+      const rows = all.sort((a, b) => { const x = val(a), y = val(b); if (x == null) return 1; if (y == null) return -1; return (typeof x === "string" ? x.localeCompare(y) : x - y) * d; });
+      const th = (key, label, r, title) => `<th class="${r ? "r" : ""}" aria-sort="${k === key ? (d > 0 ? "ascending" : "descending") : "none"}"${title ? ` title="${esc(title)}"` : ""}><button data-k="${key}">${label}<i>${k === key ? (d > 0 ? "↑" : "↓") : ""}</i></button></th>`;
+      const cur = state.retCur;
+      main.innerHTML = `<section class="panel"><div class="panel-h"><div><h2>Every index, over time</h2><p class="muted">${cur === "local" ? "Changes in each market's own currency." : `Changes as ${cur === "INR" ? "an Indian investor" : "a dollar investor"} would see them, after the currency move. 3- and 5-year figures are per year.`}${cur === "local" ? " 3- and 5-year figures are per year." : ""}</p></div>
+        <div class="seg" role="radiogroup" aria-label="Show changes in">${Object.entries(RCUR).map(([c, l]) => `<button role="radio" aria-checked="${c === cur}" class="${c === cur ? "on" : ""}" data-rcur="${c}">${c === "INR" ? "₹ " : c === "USD" ? "$ " : ""}${l}</button>`).join("")}</div></div>
+        <div class="tscroll"><table class="t ret"><thead><tr>${th("country", "Country")}${th("name", "Index")}${th("price", "Level", 1)}${P.map(([p, l, n]) => th(p, l, 1, n ? "Average per year" : "")).join("")}${th("status", "Market")}</tr></thead><tbody>
         ${rows.map((r) => { const s = status(r.c); return `<tr><td><span class="flag">${r.c.flag}</span>${esc(r.c.name)}</td><td>${sym(r.s, esc(r.n))}</td>
-          <td class="r">${px(r.s)}</td><td class="r">${chipS(r.s)}</td><td class="r">${pctT(r.s, "change1mPct")}</td><td><span class="mstat ${s.kind}" data-ms="${r.c.id}">${s.text}</span></td><td class="r">${sparkS(r.s)}</td></tr>`; }).join("")}
-        </tbody></table></div></section>`;
+          <td class="r">${px(r.s)}</td>${P.map(([p, , n]) => `<td class="r">${p === "d" && cur === "local" ? chipS(r.s) : retCell(rv(r, p, n))}</td>`).join("")}<td><span class="mstat ${s.kind}" data-ms="${r.c.id}">${s.text}</span></td></tr>`; }).join("")}
+        </tbody></table></div>
+        <p class="src">Source: Yahoo Finance daily closes; longer periods refresh every six hours. Currency-adjusted figures use each currency's change against the US dollar over the same period.</p></section>`;
+      main.querySelectorAll("[data-rcur]").forEach((b) => b.onclick = () => { state.retCur = b.dataset.rcur; store.set("wm-retcur", state.retCur); renderMain(); });
       main.querySelectorAll("[data-k]").forEach((b) => b.onclick = () => {
         const key = b.dataset.k;
-        state.sort = { key, dir: state.sort.key === key ? -state.sort.dir : (["name", "country", "status"].includes(key) ? 1 : -1) };
+        const cur = state.sort.key === "changePct" ? "d" : state.sort.key;
+        state.sort = { key, dir: cur === key ? -state.sort.dir : (["name", "country", "status"].includes(key) ? 1 : -1) };
         renderMain();
       });
     }
   }
+
+  // ── longer-period returns (api/returns.js), cached in the browser for six hours ──
+  const RET_TTL = 6 * 3600e3;
+  const RET = (() => { const c = store.get("wm-ret"); return c && c.v === 1 ? c : { v: 1, t: {}, r: {} }; })();
+  let retBusy = false;
+  function ensureReturns(list) {
+    const now = Date.now();
+    const need = [...new Set(list)].filter((s) => s && !(RET.t[s] > now - RET_TTL));
+    if (!need.length || retBusy) return;
+    retBusy = true;
+    const chunks = [];
+    for (let i = 0; i < need.length; i += 80) chunks.push(need.slice(i, i + 80));
+    Promise.all(chunks.map((c) => fetch("/api/returns?symbols=" + encodeURIComponent(c.join(","))).then((r) => (r.ok ? r.json() : null)).catch(() => null)))
+      .then((res) => {
+        res.forEach((j) => j && Object.entries(j.returns || {}).forEach(([k, v]) => { RET.r[k] = v; RET.t[k] = j.mock ? now - RET_TTL + 60e3 : now; }));
+        store.set("wm-ret", RET);
+      })
+      .finally(() => { retBusy = false; if (["table", "india", "mine"].includes(state.view)) renderMain(); });
+  }
+  // the change of symbol s over period p ("d" = today), in local currency or seen from INR or USD
+  const RCUR = { local: "Local currency", INR: "Rupees", USD: "Dollars" };
+  state.retCur = RCUR[store.get("wm-retcur")] ? store.get("wm-retcur") : "local";
+  function retOf(s, p, ccy, target = state.retCur) {
+    const raw = p === "d" ? (Qv(s).changePct != null ? Qv(s).changePct / 100 : null) : RET.r[s] ? RET.r[s][p] : null;
+    if (raw == null || target === "local" || !ccy || ccy === target) return raw;
+    const fxr = (c) => {
+      if (c === "USD") return 0;
+      const f = fx(c);
+      return p === "d" ? (Qv(f).changePct != null ? Qv(f).changePct / 100 : null) : RET.r[f] ? RET.r[f][p] : null;
+    };
+    const a = fxr(ccy), b = target === "USD" ? 0 : fxr(target);
+    return a == null || b == null ? null : C.returnIn(raw, a, b);
+  }
+  // 3- and 5-year changes read better per year
+  const perYear = (r, n) => (r == null ? null : Math.pow(1 + r, 1 / n) - 1);
+  const retCell = (v) => `<span class="${cls(v)}">${v == null ? (RET.r && Object.keys(RET.r).length ? "—" : SK) : pct(v * 100)}</span>`;
 
   function breadthHTML() {
     const st = IN.stocks.map(([s]) => Qv(s).changePct);
@@ -746,6 +827,7 @@
     });
     document.querySelectorAll("[data-sp]").forEach((el) => { el.innerHTML = spark(Qv(el.dataset.sp).spark, +el.dataset.w, +el.dataset.h); });
     patchHoldings();
+    if (state.view === "table" && state.retCur !== "local" && !document.activeElement.closest("#main")) { const x = $(".tscroll") && $(".tscroll").scrollLeft; renderMain(); if (x && $(".tscroll")) $(".tscroll").scrollLeft = x; }
     document.querySelectorAll("[data-tile]").forEach((el) => {
       const q = Qv(el.dataset.tile);
       el.setAttribute("style", tileStyle(q.changePct, +(el.dataset.max || 3)));
@@ -815,7 +897,15 @@
   }
   function modalPrice() {
     const q = state.quotes[modal.sym] || {};
-    $("#m-price").innerHTML = `<span class="m-p">${money2(modal.sym, q.price)}</span>${chip(q.changePct)}<span class="muted">today</span>`;
+    // when this price is from, so nobody mistakes an old print for a live one
+    let asOf = "";
+    if (q.time) {
+      const t = new Date(q.time * 1000), mins = (Date.now() - t) / 60000;
+      const same = t.toDateString() === new Date().toDateString();
+      const when = t.toLocaleString([], same ? { hour: "numeric", minute: "2-digit" } : { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+      asOf = `<span class="m-asof muted" title="Your time. Prices from Yahoo Finance; some exchanges are delayed 15 to 20 minutes.">${mins < 2 ? "just now" : "as of " + when}</span>`;
+    }
+    $("#m-price").innerHTML = `<span class="m-p">${money2(modal.sym, q.price)}</span>${chip(q.changePct)}<span class="muted">today</span>${asOf}`;
   }
   function starBtn() {
     const b = $("#m-star");
@@ -917,12 +1007,12 @@
     const bits = [what, f.employees ? Math.round(f.employees).toLocaleString("en-US") + " employees" : "", f.country ? "based in " + esc(f.country) : ""].filter(Boolean);
     return `<div class="fund-h"><h3>Fundamentals</h3>${bits.length ? `<p class="muted">${esc(bits.join(", ")).replace(/&amp;/g, "&")}</p>` : ""}${f.about ? `<p class="about">${esc(f.about)}</p>` : ""}</div>
       <div class="fgrid">
-        ${grp("Valuation", [item("Market cap", money(f.marketCap, c)), item("P/E", ratio(f.pe), "last 12 months"), item("Forward P/E", ratio(f.fpe), "next 12 months"), item("Price to book", ratio(f.pb, 2)), item("Price to sales", ratio(f.ps, 2)), item("EV to EBITDA", ratio(f.evEbitda)), item("Earnings per share", f.eps != null ? fmt(f.eps, 2) : "—", "last 12 months"), item("Dividend yield", f.divYield ? pctPlain(f.divYield, 2) : "—", f.payout ? Math.round(f.payout) + "% of profit paid out" : "")])}
+        ${grp("Valuation", [item("Market cap", (f.mcEst ? "≈ " : "") + money(f.marketCap, c), f.mcEst ? "estimated: profit ÷ earnings per share × price" : ""), item("P/E", ratio(f.pe), "last 12 months"), item("Forward P/E", ratio(f.fpe), "next 12 months"), item("Price to book", ratio(f.pb, 2)), item("Price to sales", ratio(f.ps, 2)), item("EV to EBITDA", ratio(f.evEbitda)), item("Earnings per share", f.eps != null ? fmt(f.eps, 2) : "—", "last 12 months"), item("Dividend yield", f.divYield ? pctPlain(f.divYield, 2) : "—", f.payout ? Math.round(f.payout) + "% of profit paid out" : "")])}
         ${grp("Profitability", [item("Return on equity", pctPlain(f.roe)), item("Return on assets", pctPlain(f.roa)), item("Gross margin", pctPlain(f.grossMargin)), item("Operating margin", pctPlain(f.operatingMargin)), item("Net margin", pctPlain(f.profitMargin)), item("Beta", f.beta != null ? f.beta.toFixed(2) : "—", "swing vs the market")])}
         ${grp("Growth", [item("Revenue growth", sg(f.revenueGrowth), "vs a year ago"), item("Earnings growth", sg(f.earningsGrowth), "vs a year ago"), item("Revenue", money(f.revenue, rc), "last 12 months"), item("Free cash flow", money(f.freeCashflow, rc), "last 12 months")])}
         ${grp("Balance sheet", [item("Cash", money(f.cash, rc)), item("Debt", money(f.debt, rc)), item("Debt to equity", f.debtToEquity != null ? f.debtToEquity.toFixed(2) + "×" : "—"), item("Current ratio", f.currentRatio != null ? f.currentRatio.toFixed(2) : "—", "short-term assets ÷ liabilities")])}
         ${f.rating || f.target ? grp("Analysts", [item("Consensus", RATING[f.rating] || "—", f.analysts ? f.analysts + " analysts" : ""), item("Average price target", f.target ? fmt(f.target) : "—", up != null ? `${up >= 0 ? "+" : "−"}${Math.abs(up).toFixed(1)}% from the current price` : "")]) : ""}
-      </div><p class="note">From Yahoo Finance. Company financials are reported in ${esc(rc)}.</p>`;
+      </div><p class="note">Source: Yahoo Finance. Company financials are reported in ${esc(rc)}.${f.mcEst ? " Figures marked ≈ are our estimate where Yahoo gives none." : ""}</p>`;
   }
 
   const niceStep = (n) => { const e = Math.pow(10, Math.floor(Math.log10(n))), f = n / e; return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * e; };

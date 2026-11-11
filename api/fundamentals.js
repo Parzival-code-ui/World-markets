@@ -69,7 +69,7 @@ async function fillCaps(out) {
         const r = j.quoteSummary.result[0], p = r.price || {}, sh = sharesFrom(r.defaultKeyStatistics || {});
         const px = num(p.regularMarketPrice);
         if (num(p.marketCap)) out[s].marketCap = num(p.marketCap);
-        else if (sh && px) out[s].marketCap = sh * px * (minor(p.currency) ? 0.01 : 1);
+        else if (sh && px) { out[s].marketCap = sh * px * (minor(p.currency) ? 0.01 : 1); out[s].mcEst = !num((r.defaultKeyStatistics || {}).sharesOutstanding); }
       } catch (e) { /* leave it blank */ }
     }
   }));
@@ -124,8 +124,8 @@ async function detail(symbol) {
   const pctOf = (v) => (num(v) == null ? null : num(v) * 100);
   const desc = ap.longBusinessSummary || "";
   const k = minor(p.currency) ? 0.01 : 1; // ratios built on a pence price need scaling back
-  let mc = num(p.marketCap);
-  if (!mc && sharesFrom(ks) && num(p.regularMarketPrice)) mc = sharesFrom(ks) * num(p.regularMarketPrice) * k;
+  let mc = num(p.marketCap), mcEst = false;
+  if (!mc && sharesFrom(ks) && num(p.regularMarketPrice)) { mc = sharesFrom(ks) * num(p.regularMarketPrice) * k; mcEst = !num(ks.sharesOutstanding); }
   return {
     symbol,
     name: p.longName || p.shortName || symbol,
@@ -138,6 +138,7 @@ async function detail(symbol) {
     website: ap.website || null,
     about: desc.length > 420 ? desc.slice(0, desc.lastIndexOf(" ", 400)) + "…" : desc,
     marketCap: mc,
+    mcEst,
     pe: num(sd.trailingPE),
     fpe: num(sd.forwardPE) != null ? num(sd.forwardPE) : num(ks.forwardPE),
     pb: num(ks.priceToBook) != null ? num(ks.priceToBook) * k : null,

@@ -60,4 +60,12 @@ window.INDIA = {
     ["TATASTEEL.NS", "Tata Steel", "Metals"],
     ["WIPRO.NS", "Wipro", "IT"],
   ],
+  // Indian companies whose shares also trade in New York: [US ticker, NSE ticker, company]
+  adrs: [
+    ["INFY", "INFY.NS", "Infosys"],
+    ["WIT", "WIPRO.NS", "Wipro"],
+    ["HDB", "HDFCBANK.NS", "HDFC Bank"],
+    ["IBN", "ICICIBANK.NS", "ICICI Bank"],
+    ["RDY", "DRREDDY.NS", "Dr. Reddy's"],
+  ],
 };

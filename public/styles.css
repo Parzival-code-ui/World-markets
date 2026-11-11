@@ -690,3 +690,20 @@ a.ev:hover { background: var(--wash); }
 .hbox .auth-msg { margin-bottom: 12px; }
 .hbox .btn.primary { height: 40px; }
 @media (max-width: 640px) { .hold-sum { grid-template-columns: 1fr 1fr; } .hold-sum div:nth-child(3) { grid-column: 1 / -1; } }
+
+/* longer-period returns table */
+.src { margin: 12px 4px 2px; font-size: 12.5px; color: var(--muted); }
+.t.ret td, .t.ret th { white-space: nowrap; }
+.panel-h .seg { flex-wrap: wrap; }
+@media (max-width: 640px) { .panel-h .seg button { padding: 6px 10px; } }
+
+/* India: global cues and ADRs */
+.cues { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.cue { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg); }
+.cue:hover { border-color: var(--line-2); }
+.cue > span:first-child { grid-column: 1 / -1; font-size: 13px; color: var(--muted); }
+.cue-v { font-weight: 600; font-variant-numeric: tabular-nums; }
+.cue small { grid-column: 1 / -1; font-size: 12px; }
+.it-r { font-size: 12.5px; display: block; margin-top: 2px; }
+.m-asof { font-size: 12.5px; margin-left: 4px; }
+.econ-src { margin: -4px 0 8px; font-size: 11.5px; }

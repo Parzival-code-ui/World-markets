@@ -3,6 +3,9 @@
   "functions": {
     "api/quotes.js": {
       "maxDuration": 20
+    },
+    "api/returns.js": {
+      "maxDuration": 30
     }
   },
   "cleanUrls": true,

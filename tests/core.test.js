@@ -92,3 +92,17 @@ test("benchmark buys the index on the same dates", () => {
   assert.ok(Math.abs(b.value - 2340) < 1e-9);
   assert.equal(C.closeOn(pts, "2025-01-09"), null);
 });
+
+test("returns endpoint maths", () => {
+  const { returnsFrom } = require("../api/returns.js");
+  const day = 86400, t0 = Date.UTC(2021, 10, 1) / 1000;
+  // a price that grows 10% a year, one point a day for five years and ten days
+  const pts = [];
+  for (let i = 0; i <= 5 * 365 + 12; i++) pts.push([t0 + i * day, 100 * Math.pow(1.1, i / 365)]);
+  const r = returnsFrom(pts);
+  assert.ok(Math.abs(r.y1 - 0.1) < 0.002);
+  assert.ok(Math.abs(r.y3 - (Math.pow(1.1, 3) - 1)) < 0.005);
+  assert.ok(r.y5 > 0.6 && r.y5 < 0.62);
+  // a short history doesn't pretend to know the 5-year number
+  assert.equal(returnsFrom(pts.slice(-400)).y5, null);
+});
