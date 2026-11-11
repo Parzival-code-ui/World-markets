@@ -1,7 +1,9 @@
 // Scheduled market-moving events for the Calendar tab: central bank decisions and inflation releases.
 // [date, local time or null, IANA time zone, kind, title, flag]
 // Sources: RBI (MPC schedule 2026-27), Federal Reserve (FOMC 2027), ECB Governing Council calendar,
-// Bank of England (MPC dates 2027), Bank of Japan (MPM 2027), BLS CPI schedule, MoSPI advance release calendar.
+// Bank of England (MPC dates 2027), Bank of Japan (MPM 2027), BLS CPI and Employment Situation schedules,
+// BEA release schedule (PCE), MoSPI advance release calendar 2026-27 (CPI, GDP, IIP).
+// NSE's monthly F&O expiry is worked out in app.js (last Tuesday, earlier if that's a holiday).
 // Company results dates come live from Yahoo Finance, so they aren't listed here.
 window.CALENDAR_CHECKED = "November 2026";
 window.CALENDAR = [
@@ -67,4 +69,33 @@ window.CALENDAR = [
   ["2027-01-12", "16:00", "Asia/Kolkata", "cpi", "India inflation (CPI) for December", "🇮🇳"],
   ["2027-02-12", "16:00", "Asia/Kolkata", "cpi", "India inflation (CPI) for January", "🇮🇳"],
   ["2027-03-12", "16:00", "Asia/Kolkata", "cpi", "India inflation (CPI) for February", "🇮🇳"],
+  // US jobs report (BLS Employment Situation), covering the previous month
+  ["2026-12-04", "08:30", "America/New_York", "data", "US jobs report for November", "🇺🇸"],
+  ["2027-01-08", "08:30", "America/New_York", "data", "US jobs report for December", "🇺🇸"],
+  ["2027-02-05", "08:30", "America/New_York", "data", "US jobs report for January", "🇺🇸"],
+  ["2027-03-05", "08:30", "America/New_York", "data", "US jobs report for February", "🇺🇸"],
+  ["2027-04-02", "08:30", "America/New_York", "data", "US jobs report for March", "🇺🇸"],
+  ["2027-05-07", "08:30", "America/New_York", "data", "US jobs report for April", "🇺🇸"],
+  ["2027-06-04", "08:30", "America/New_York", "data", "US jobs report for May", "🇺🇸"],
+  ["2027-07-02", "08:30", "America/New_York", "data", "US jobs report for June", "🇺🇸"],
+  ["2027-08-06", "08:30", "America/New_York", "data", "US jobs report for July", "🇺🇸"],
+  ["2027-09-03", "08:30", "America/New_York", "data", "US jobs report for August", "🇺🇸"],
+  ["2027-10-08", "08:30", "America/New_York", "data", "US jobs report for September", "🇺🇸"],
+  ["2027-11-05", "08:30", "America/New_York", "data", "US jobs report for October", "🇺🇸"],
+  ["2027-12-03", "08:30", "America/New_York", "data", "US jobs report for November", "🇺🇸"],
+  // US PCE inflation, the Fed's preferred measure (BEA Personal Income and Outlays); dates BEA has published so far
+  ["2026-11-25", "08:30", "America/New_York", "cpi", "US PCE inflation for October", "🇺🇸"],
+  ["2026-12-23", "08:30", "America/New_York", "cpi", "US PCE inflation for November", "🇺🇸"],
+  ["2027-06-25", "08:30", "America/New_York", "cpi", "US PCE inflation for May", "🇺🇸"],
+  ["2027-07-29", "08:30", "America/New_York", "cpi", "US PCE inflation for June", "🇺🇸"],
+  ["2027-08-25", "08:30", "America/New_York", "cpi", "US PCE inflation for July", "🇺🇸"],
+  ["2027-10-28", "08:30", "America/New_York", "cpi", "US PCE inflation for September", "🇺🇸"],
+  ["2027-11-24", "08:30", "America/New_York", "cpi", "US PCE inflation for October", "🇺🇸"],
+  // India GDP and industrial production (MoSPI); MoSPI moves a release to the next working day after a holiday
+  ["2026-11-30", "16:00", "Asia/Kolkata", "data", "India GDP for July to September", "🇮🇳"],
+  ["2027-01-07", "16:00", "Asia/Kolkata", "data", "India GDP: first estimate for 2026-27", "🇮🇳"],
+  ["2027-02-26", "16:00", "Asia/Kolkata", "data", "India GDP for October to December", "🇮🇳"],
+  ["2026-11-28", "16:00", "Asia/Kolkata", "data", "India industrial production (IIP) for October", "🇮🇳"],
+  ["2026-12-28", "16:00", "Asia/Kolkata", "data", "India industrial production (IIP) for November", "🇮🇳"],
+  ["2027-01-28", "16:00", "Asia/Kolkata", "data", "India industrial production (IIP) for December", "🇮🇳"],
 ];

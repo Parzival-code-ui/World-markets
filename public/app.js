@@ -639,8 +639,8 @@
 
 
   // ── calendar: rate decisions, inflation releases, company results, market holidays ──
-  const CAL_KINDS = [["all", "Everything"], ["rate", "Interest rates"], ["cpi", "Inflation"], ["results", "Company results"], ["holiday", "Market holidays"]];
-  const CAL_LABEL = { rate: "Interest rates", cpi: "Inflation", results: "Results", holiday: "Holiday" };
+  const CAL_KINDS = [["all", "Everything"], ["rate", "Interest rates"], ["cpi", "Inflation"], ["data", "Jobs and growth"], ["results", "Company results"], ["expiry", "F&O expiry"], ["holiday", "Market holidays"]];
+  const CAL_LABEL = { rate: "Interest rates", cpi: "Inflation", data: "Economy", results: "Results", holiday: "Holiday", expiry: "F&O expiry" };
   // a wall-clock time in some time zone, as a moment
   const zonedEpoch = C.zonedEpoch;
   const localDay = (t) => new Date(t).toLocaleDateString("en-CA"); // YYYY-MM-DD in the viewer's zone
@@ -650,6 +650,21 @@
       const t = zonedEpoch(date, time, tz);
       ev.push({ kind, title, flag, t, day: time ? localDay(t) : date, timed: !!time, sub: time ? "" : "Announced when the meeting ends, usually around midday in Tokyo" });
     });
+    // NSE monthly F&O expiry: the last Tuesday of the month, or the trading day before if that's a holiday.
+    // Beyond the holiday data the plain last Tuesday is shown, marked as not yet confirmed.
+    const nse = byId.in, hin = HOL.in;
+    for (let k = 0; k < 7; k++) {
+      const now = new Date(), y = now.getFullYear(), m = now.getMonth() + k;
+      const last = new Date(Date.UTC(y, m + 1, 0));
+      const back = (last.getUTCDay() - 2 + 7) % 7;
+      let d = new Date(Date.UTC(y, m + 1, -back));
+      const known = hin && d.toISOString().slice(0, 10) <= hin.through;
+      if (known) while (holidayOn(nse, d.toISOString().slice(0, 10)) || [0, 6].includes(d.getUTCDay())) d = new Date(d - 864e5);
+      const date = d.toISOString().slice(0, 10), t = zonedEpoch(date, "15:30", "Asia/Kolkata");
+      const moved = d.getUTCDay() !== 2;
+      ev.push({ kind: "expiry", title: "NSE monthly F&O expiry", flag: "🇮🇳", t, day: localDay(t), timed: true,
+        sub: moved ? "Brought forward from Tuesday because of a market holiday" : known ? "Nifty, Bank Nifty and stock futures and options" : "Last Tuesday of the month; check NSE's holiday list nearer the time" });
+    }
     // full-day exchange closures, one row per date
     const byDate = {};
     M.forEach((c) => {
