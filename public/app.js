@@ -1551,41 +1551,90 @@
     if (t) window.scrollTo({ top: t.getBoundingClientRect().top + window.scrollY - 8, behavior: REDUCED ? "auto" : "smooth" });
   });
 
-  // ── holdings: the price someone bought at (and how many), to follow their gain or loss ──
+  // ── holdings: buy lots (date, price, quantity, fees) for anything in My markets ──
   const canHold = (w) => !["idx", "rate"].includes(kindOf(w));
+  // older saves kept one buy price and quantity; they become a single undated lot
+  const lotsOf = (w) => (Array.isArray(w.lots) ? w.lots : w.buy ? [{ p: w.buy, q: w.qty || null, d: null }] : []);
   const toINR = (v, cur) => {
     if (v == null || !cur) return null;
     if (cur === "INR") return v;
     const usd = usdOf(v, cur), r = Qv("INR=X").price;
     return usd != null && r ? usd * r : null;
   };
-  const inr = (v) => (v == null ? "—" : (v < 0 ? "−" : "") + "₹" + Math.abs(v).toLocaleString("en-IN", { maximumFractionDigits: 0 }));
+  const inr = (v) => (v == null || !isFinite(v) ? "—" : (v < 0 ? "−" : "") + "₹" + Math.abs(v).toLocaleString("en-IN", { maximumFractionDigits: 0 }));
   const signed = (s, v) => { if (v == null || !isFinite(v)) return "—"; const [a, b] = affix(s); return (v > 0 ? "+" : v < 0 ? "−" : "") + a + fmt(Math.abs(v)) + b; };
+  const qtyFmt = (q) => q.toLocaleString("en-US", { maximumFractionDigits: 6 });
+  const yr = (r) => (r == null ? "" : `${r >= 0 ? "+" : "−"}${Math.abs(r * 100).toFixed(1)}% a year`);
   function plHTML(w) {
-    if (!w.buy) return canHold(w) ? `<button class="hold-add" data-hold="${esc(w.s)}">+ Add your buy price</button>` : "";
-    const p = Qv(w.s).price;
-    const ch = p != null ? ((p - w.buy) / w.buy) * 100 : null;
-    const amt = p != null && w.qty ? (p - w.buy) * w.qty : null;
-    return `<button class="hold" data-hold="${esc(w.s)}" title="Edit your buy price">
-      <span class="muted">Bought at ${money2(w.s, w.buy)}${w.qty ? ` × ${w.qty.toLocaleString("en-US", { maximumFractionDigits: 6 })}` : ""}</span>
-      <span class="${cls(ch)}"><b>${pct(ch)}</b>${amt != null ? ` ${signed(w.s, amt)}` : ""}</span></button>`;
+    const lots = lotsOf(w);
+    if (!lots.length) return canHold(w) ? `<button class="hold-add" data-hold="${esc(w.s)}">+ Add what you bought</button>` : "";
+    const h = C.holding(lots, Qv(w.s).price);
+    const term = h.shortQty != null && kindOf(w) === "stk" && curOf(w.s) === "INR"
+      ? (h.shortQty === 0 ? "all held over a year" : h.longQty === 0 ? "all held under a year" : `${qtyFmt(h.longQty)} over a year, ${qtyFmt(h.shortQty)} under`) : "";
+    return `<button class="hold" data-hold="${esc(w.s)}" title="Edit what you bought">
+      <span class="muted">${h.qty ? `${qtyFmt(h.qty)} at ${money2(w.s, h.avg)} average` : `Bought at ${money2(w.s, h.avg)}`}${h.lots > 1 ? `, ${h.lots} buys` : ""}</span>
+      <span class="${cls(h.plPct)}"><b>${pct(h.plPct == null ? null : h.plPct * 100)}</b>${h.pl != null ? ` ${signed(w.s, h.pl)}` : ""}${h.irr != null ? ` <small>(${yr(h.irr)})</small>` : ""}</span>
+      ${term ? `<span class="muted small">${term}</span>` : ""}</button>`;
+  }
+  // Nifty 50 daily history, to compare with putting the same money into the index on the same dates
+  let bench = null, benchBusy = false;
+  function ensureBench() {
+    if (bench || benchBusy) return;
+    benchBusy = true;
+    getChart("^NSEI", "5y").then((d) => { bench = d.points; if (state.view === "mine") renderMain(); }).catch(() => {}).finally(() => { benchBusy = false; });
+  }
+  function portfolio() {
+    const hs = watch.filter((w) => canHold(w) && lotsOf(w).some((l) => l.q > 0));
+    let cost = 0, value = 0, miss = 0, flows = [], benchLots = [], undated = 0;
+    const byKind = {}, byCur = {};
+    hs.forEach((w) => {
+      const c = curOf(w.s), p = Qv(w.s).price, lots = lotsOf(w).filter((l) => l.p > 0 && l.q > 0);
+      const h = C.holding(lots, p);
+      const a = toINR(h.cost, c), b = h.value != null ? toINR(h.value, c) : null;
+      if (a == null || b == null) { miss++; return; }
+      cost += a; value += b;
+      const k = KINDS.find((x) => x[0] === kindOf(w))[1];
+      byKind[k] = (byKind[k] || 0) + b; byCur[c] = (byCur[c] || 0) + b;
+      // money in, in rupees at today's rate (an approximation for foreign holdings)
+      const rate = a / h.cost;
+      lots.forEach((l) => {
+        const amt = (l.p * l.q + (l.fee || 0)) * rate;
+        if (l.d) { flows.push([Date.parse(l.d), -amt]); benchLots.push({ d: l.d, p: amt, q: 1 }); } else undated++;
+      });
+    });
+    if (!hs.length) return null;
+    const irr = !undated && flows.length ? C.xirr([...flows, [Date.now(), value]]) : null;
+    let vsNifty = null;
+    if (bench && !undated && benchLots.length) {
+      const pts = bench.map((x) => [x[0], x[1]]);
+      // today's level: the live quote, unless it disagrees wildly with the history (then the history's last close)
+      const last = pts[pts.length - 1][1], live = Qv("^NSEI").price;
+      vsNifty = C.benchmark(benchLots, (d) => C.closeOn(pts, d), live && Math.abs(live / last - 1) < 0.15 ? live : last);
+    }
+    return { n: hs.length - miss, miss, cost, value, gain: value - cost, irr, vsNifty, undated, byKind, byCur };
+  }
+  function bars(obj, total) {
+    const list = Object.entries(obj).sort((a, b) => b[1] - a[1]);
+    const hue = ["var(--sun)", "var(--cmp)", "var(--up)", "var(--ma200)", "var(--ma50)", "var(--muted)"];
+    return `<div class="alloc-bar">${list.map(([, v], i) => `<i style="flex:${v};background:${hue[i % hue.length]}"></i>`).join("")}</div>
+      <ul class="alloc-key">${list.map(([k, v], i) => `<li><i style="background:${hue[i % hue.length]}"></i>${esc(k)} <b>${Math.round((v / total) * 100)}%</b></li>`).join("")}</ul>`;
   }
   function holdSummary() {
-    const hs = watch.filter((w) => w.buy && w.qty && canHold(w));
-    if (!hs.length) return "";
-    let cost = 0, now = 0, miss = 0;
-    hs.forEach((w) => {
-      const c = curOf(w.s), p = Qv(w.s).price;
-      const a = toINR(w.buy * w.qty, c), b = p != null ? toINR(p * w.qty, c) : null;
-      if (a == null || b == null) { miss++; return; }
-      cost += a; now += b;
-    });
-    const gain = now - cost, g = cost ? (gain / cost) * 100 : null;
+    const P = portfolio();
+    if (!P) return "";
+    if (!P.undated) ensureBench();
+    const g = P.cost ? P.gain / P.cost : null;
+    const nifty = P.vsNifty ? `<div><span class="muted">Same money in the Nifty 50</span><b>${inr(P.vsNifty.value)} <small class="${cls(P.vsNifty.ret)}">${pct(P.vsNifty.ret * 100)}</small></b>
+      <span class="muted small">${P.value >= P.vsNifty.value ? "You're ahead by " + inr(P.value - P.vsNifty.value) : "The index is ahead by " + inr(P.vsNifty.value - P.value)}</span></div>` : "";
     return `<div class="hold-sum" data-holdsum>
-      <div><span class="muted">Invested</span><b>${inr(cost)}</b></div>
-      <div><span class="muted">Worth now</span><b>${inr(now)}</b></div>
-      <div><span class="muted">Gain or loss</span><b class="${cls(gain)}">${gain > 0 ? "+" : ""}${inr(gain)} <small>${pct(g)}</small></b></div>
-      <p class="muted">${hs.length - miss} holding${hs.length - miss === 1 ? "" : "s"} with a quantity, in rupees at today's exchange rates${miss ? `. ${miss} left out while their price loads.` : "."}</p>
+      <div class="hs-nums">
+        <div><span class="muted">Invested</span><b>${inr(P.cost)}</b></div>
+        <div><span class="muted">Worth now</span><b>${inr(P.value)}</b></div>
+        <div><span class="muted">Gain or loss</span><b class="${cls(P.gain)}">${P.gain > 0 ? "+" : ""}${inr(P.gain)} <small>${pct(g == null ? null : g * 100)}</small></b>${P.irr != null ? `<span class="muted small">${yr(P.irr)} (XIRR)</span>` : ""}</div>
+        ${nifty}
+      </div>
+      ${P.value > 0 ? `<div class="hs-alloc"><div><h4>By type</h4>${bars(P.byKind, P.value)}</div><div><h4>By currency</h4>${bars(P.byCur, P.value)}</div></div>` : ""}
+      <p class="muted">${P.n} holding${P.n === 1 ? "" : "s"}, in rupees at today's exchange rates.${P.undated ? " Add buy dates to see the yearly return and the Nifty comparison." : ""}${P.miss ? ` ${P.miss} left out while their price loads.` : ""} Not tax or investment advice.</p>
     </div>`;
   }
   function patchHoldings() {
@@ -1597,37 +1646,71 @@
   function holdBox(w) {
     const [a, b] = affix(w.s);
     const unit = (a.trim() || b.trim() || curOf(w.s) || "").trim();
+    const today = new Date().toLocaleDateString("en-CA");
+    let lots = lotsOf(w).map((l) => ({ ...l }));
+    if (!lots.length) lots = [{ d: today, p: null, q: null, fee: null }];
     const d = document.createElement("div");
     d.className = "confirm"; d.setAttribute("role", "dialog"); d.setAttribute("aria-modal", "true"); d.setAttribute("aria-labelledby", "hb-t");
-    d.innerHTML = `<form class="cbox hbox" novalidate>
-      <h3 id="hb-t">${esc(w.n || w.s)}</h3>
-      <p>Enter what you paid, and how many you hold if you want the amount as well as the percentage. Only you can see this.</p>
-      <label>Buy price${unit ? ` (${esc(unit)})` : ""}<input name="buy" type="text" inputmode="decimal" autocomplete="off" value="${w.buy ?? ""}" placeholder="${Qv(w.s).price != null ? fmt(Qv(w.s).price).replace(/,/g, "") : ""}" /></label>
-      <label>Quantity <span class="muted">(optional)</span><input name="qty" type="text" inputmode="decimal" autocomplete="off" value="${w.qty ?? ""}" placeholder="e.g. 10" /></label>
-      <p class="auth-msg" hidden></p>
-      <div class="cbtns">${w.buy ? `<button type="button" class="btn" data-a="del">Remove buy price</button>` : ""}<button type="button" class="btn" data-a="no">Cancel</button><button type="submit" class="btn primary">Save</button></div>
-    </form>`;
-    document.body.appendChild(d);
-    const f = d.querySelector("form"), msg = d.querySelector(".auth-msg");
-    const close = () => { d.remove(); const b = document.querySelector(`[data-hold="${CSS.escape(w.s)}"]`); if (b) b.focus({ preventScroll: true }); };
-    const num = (v) => { v = String(v).replace(/[,\s₹$£€¥]/g, ""); return v === "" ? null : +v; };
-    const done = () => { store.set("wm-watch", watch); syncSave(); close(); if (state.view === "mine") { const y = window.scrollY; renderMain(); window.scrollTo(0, y); } };
-    f.onsubmit = (e) => {
-      e.preventDefault();
-      const buy = num(f.buy.value), qty = num(f.qty.value);
-      if (buy == null || !isFinite(buy) || buy <= 0) { msg.textContent = "Enter the price you paid, as a number above zero."; msg.hidden = false; return f.buy.focus(); }
-      if (qty != null && (!isFinite(qty) || qty <= 0)) { msg.textContent = "Quantity should be a number above zero, or leave it empty."; msg.hidden = false; return f.qty.focus(); }
-      w.buy = buy; if (qty) w.qty = qty; else delete w.qty;
-      done(); toast(`Saved your buy price for ${w.n || w.s}`);
+    const row = (l, i) => `<fieldset class="lot" data-i="${i}"><legend class="vh">Buy ${i + 1}</legend>
+      <label>Date<input name="d" type="date" max="${today}" value="${l.d || ""}" /></label>
+      <label>Price${unit ? ` (${esc(unit)})` : ""}<input name="p" type="text" inputmode="decimal" autocomplete="off" value="${l.p ?? ""}" placeholder="${Qv(w.s).price != null ? fmt(Qv(w.s).price).replace(/,/g, "") : ""}" /></label>
+      <label>Quantity<input name="q" type="text" inputmode="decimal" autocomplete="off" value="${l.q ?? ""}" /></label>
+      <label>Fees<input name="fee" type="text" inputmode="decimal" autocomplete="off" value="${l.fee ?? ""}" placeholder="0" /></label>
+      <button type="button" class="mc-x lot-x" data-rm="${i}" aria-label="Remove buy ${i + 1}"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 6 8 8M14 6l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></fieldset>`;
+    const draw = () => {
+      d.innerHTML = `<form class="cbox hbox" novalidate>
+        <h3 id="hb-t">${esc(w.n || w.s)}</h3>
+        <p>One line for each time you bought. Dates give you the yearly return and the Nifty comparison; quantity gives you amounts. Only you can see this.</p>
+        <div class="lots">${lots.map(row).join("")}</div>
+        <button type="button" class="linkbtn" data-addlot>+ Add another buy</button>
+        <p class="auth-msg" hidden></p>
+        <div class="cbtns">${lotsOf(w).length ? `<button type="button" class="btn" data-a="del">Remove all</button>` : ""}<button type="button" class="btn" data-a="no">Cancel</button><button type="submit" class="btn primary">Save</button></div>
+      </form>`;
     };
+    const read = () => [...d.querySelectorAll(".lot")].map((f) => Object.fromEntries(["d", "p", "q", "fee"].map((k) => [k, f.querySelector(`[name=${k}]`).value])));
+    const num = (v) => { v = String(v).replace(/[,\s₹$£€¥]/g, ""); return v === "" ? null : +v; };
+    draw();
+    document.body.appendChild(d);
+    const msg = () => d.querySelector(".auth-msg");
+    const close = () => { d.remove(); const x = document.querySelector(`[data-hold="${CSS.escape(w.s)}"]`); if (x) x.focus({ preventScroll: true }); };
+    const done = () => { delete w.buy; delete w.qty; store.set("wm-watch", watch); syncSave(); close(); if (state.view === "mine") { const y = window.scrollY; renderMain(); window.scrollTo(0, y); } };
+    const err = (t, el) => { const m = msg(); m.textContent = t; m.hidden = false; if (el) el.focus(); };
+    d.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const raw = read(), out = [];
+      for (let i = 0; i < raw.length; i++) {
+        const r = raw[i], f = d.querySelectorAll(".lot")[i];
+        if (!r.p && !r.q && !r.fee) continue; // an empty line is ignored
+        const p = num(r.p), q = num(r.q), fee = num(r.fee);
+        if (p == null || !isFinite(p) || p <= 0) return err(`Buy ${i + 1}: enter the price you paid, as a number above zero.`, f.querySelector("[name=p]"));
+        if (q != null && (!isFinite(q) || q <= 0)) return err(`Buy ${i + 1}: quantity should be a number above zero, or leave it empty.`, f.querySelector("[name=q]"));
+        if (fee != null && (!isFinite(fee) || fee < 0)) return err(`Buy ${i + 1}: fees should be zero or more.`, f.querySelector("[name=fee]"));
+        if (r.d && r.d > today) return err(`Buy ${i + 1}: the date can't be in the future.`, f.querySelector("[name=d]"));
+        const l = { p };
+        if (r.d) l.d = r.d; if (q) l.q = q; if (fee) l.fee = fee;
+        out.push(l);
+      }
+      if (!out.length) return err("Enter at least one price, or choose Remove all.");
+      if (out.length > 1 && out.some((l) => !l.q)) return err("With more than one buy, give each a quantity so they can be added up.");
+      w.lots = out.sort((x, y) => (x.d || "").localeCompare(y.d || ""));
+      done(); toast(`Saved ${out.length > 1 ? out.length + " buys" : "your buy"} for ${w.n || w.s}`);
+    });
     d.addEventListener("click", (e) => {
-      const b = e.target.closest("[data-a]");
-      if (e.target === d || (b && b.dataset.a === "no")) return close();
-      if (b && b.dataset.a === "del") { delete w.buy; delete w.qty; done(); toast("Buy price removed"); }
+      const b2 = e.target.closest("[data-a]");
+      if (e.target === d || (b2 && b2.dataset.a === "no")) return close();
+      if (b2 && b2.dataset.a === "del") { delete w.lots; done(); toast("Removed what you bought"); return; }
+      if (e.target.closest("[data-addlot]")) {
+        lots = read().map((r) => ({ d: r.d, p: r.p, q: r.q, fee: r.fee }));
+        if (lots.length >= 30) return err("Up to 30 buys per holding.");
+        lots.push({ d: today, p: null, q: null, fee: null }); draw();
+        d.querySelectorAll(".lot")[lots.length - 1].querySelector("[name=p]").focus();
+      }
+      const rm = e.target.closest("[data-rm]");
+      if (rm) { lots = read().map((r) => ({ d: r.d, p: r.p, q: r.q, fee: r.fee })); lots.splice(+rm.dataset.rm, 1); if (!lots.length) lots.push({ d: today, p: null, q: null, fee: null }); draw(); }
     });
     d.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } });
-    f.addEventListener("input", () => (msg.hidden = true));
-    setTimeout(() => f.buy.focus(), 30);
+    d.addEventListener("input", () => (msg().hidden = true));
+    setTimeout(() => { const f = d.querySelector("[name=p]"); if (f) f.focus(); }, 30);
   }
   document.addEventListener("click", (e) => {
     const b = e.target.closest("[data-hold]");

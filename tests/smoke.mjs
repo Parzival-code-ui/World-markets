@@ -40,8 +40,15 @@ try {
     await page.evaluate(() => localStorage.setItem("wm-demo-user", JSON.stringify({ uid: "demo", name: "Demo", email: "d@example.com", photo: "", google: false, verified: true })));
     await page.reload(); await page.waitForTimeout(900);
     await page.locator("[data-pick='CL=F']").click();
-    await page.locator("[data-hold='CL=F']").first().click().catch(() => {});
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(400);
+    // record a buy with a date, price and quantity, and see the gain appear
+    await page.goto(base + "/#mine"); await page.waitForTimeout(500);
+    await page.locator("[data-hold='CL=F']").first().click();
+    await page.locator(".lot [name=d]").first().fill("2025-01-15");
+    await page.locator(".lot [name=p]").first().fill("70");
+    await page.locator(".lot [name=q]").first().fill("10");
+    await page.locator(".hbox .btn.primary").click(); await page.waitForTimeout(400);
+    if (!/average/.test(await page.locator("[data-pl='CL=F']").innerText())) fail("saved buy didn't show on the card");
     if (errors.length) fail(`${w}px page errors: ${errors.join(" | ")}`);
     await page.close();
   }
