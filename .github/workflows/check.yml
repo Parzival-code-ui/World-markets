@@ -13,6 +13,8 @@ jobs:
           node-version: 22
       - name: Syntax
         run: for f in api/*.js public/*.js public/lib/*.js public/data/*.js server.js; do node --check "$f"; done
+      - name: Security headers match the pages
+        run: node scripts/csp.js --check
       - name: Unit tests
         run: npm test
       - name: Browser smoke test

@@ -8,6 +8,8 @@
   // accounts (auth.js): most of the site needs a signed-in visitor; the homepage stays open as a preview
   const AU = window.WMAuth || { user: null, known: true, ready: Promise.resolve(null), onChange() {}, token: async () => null, load: async () => null, save: async () => {} };
   const authed = () => !!AU.user;
+  // email accounts confirm their address before anything is saved to them (Google accounts already have)
+  const unverified = () => !!AU.user && AU.user.verified === false;
   const LOCKED = ["mine"]; // market data is open to everyone; the account holds what is personal
   async function authFetch(url) {
     const t = await AU.token().catch(() => null);
@@ -348,6 +350,7 @@
   const isWatched = (s) => watch.some((w) => w.s === s);
   function toggleWatch(s, quiet) {
     if (!authed()) return openAuth("watch");
+    if (unverified()) { setView("mine"); return toast("Confirm your email first. The link is in your inbox."); }
     const i = watch.findIndex((w) => w.s === s);
     if (i >= 0) { watch.splice(i, 1); if (!quiet) toast(`Removed ${NAMES[s] ? NAMES[s].name : s} from My markets`); }
     else {
@@ -664,6 +667,7 @@
     const main = $("#main");
     $("#filters").hidden = ["map", "india", "stocks", "cal", "mine"].includes(state.view);
     if (LOCKED.includes(state.view) && !authed()) return renderLocked(main);
+    if (LOCKED.includes(state.view) && unverified()) return renderVerify(main);
     if (state.view === "mine") return renderMine(main);
     if (state.view === "india") return renderIndia(main);
     if (state.view === "stocks") return renderStocks(main);
@@ -1548,6 +1552,26 @@
     cal: ["Calendar", "Central bank meetings, inflation releases, company results and market holidays."],
     india: ["India", "Nifty, Sensex, sector indices and the top 50 companies with valuation columns."],
   };
+  function renderVerify(main) {
+    main.innerHTML = `<div class="locked-panel">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5.5" width="17" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m4 7 8 6 8-6" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+      <h2>Confirm your email</h2>
+      <p>We sent a link to <b>${esc(AU.user.email)}</b>. Click it, then come back here. Check your spam folder if it isn't there.</p>
+      <button class="btn primary" data-verified>I've clicked the link</button>
+      <p class="muted small"><button class="linkbtn" data-resend>Send the email again</button></p>
+    </div>`;
+  }
+  document.addEventListener("click", async (e) => {
+    if (e.target.closest("[data-verified]")) {
+      await AU.refresh().catch(() => {});
+      if (unverified()) toast("Not confirmed yet. Click the link in the email first.");
+      else { toast("Email confirmed"); pullSettings(); }
+    }
+    if (e.target.closest("[data-resend]")) {
+      try { await AU.resendVerification(); toast("Sent. Check your inbox."); }
+      catch (x) { toast(x && x.code === "auth/too-many-requests" ? "Already sent recently. Wait a few minutes." : "Couldn't send it. Try again later."); }
+    }
+  });
   function renderLocked(main) {
     const [t, d] = LOCK_COPY[state.view] || ["This view", ""];
     main.innerHTML = `<div class="locked-panel">
@@ -1696,9 +1720,9 @@
 
   // watchlist and settings live in the account, so they follow the visitor to other devices
   let saveT, syncing = false, dirty = false;
-  const flush = () => { clearTimeout(saveT); if (!dirty || !authed()) return; dirty = false; AU.save({ watch, theme: store.get("wm-theme") || "auto", cb: !!store.get("wm-cb"), copts }).catch((e) => { dirty = true; console.warn("save failed", e); }); };
+  const flush = () => { clearTimeout(saveT); if (!dirty || !authed() || unverified()) return; dirty = false; AU.save({ watch, theme: store.get("wm-theme") || "auto", cb: !!store.get("wm-cb"), copts }).catch((e) => { dirty = true; console.warn("save failed", e); }); };
   function syncSave() {
-    if (!authed() || syncing) return;
+    if (!authed() || unverified() || syncing) return;
     dirty = true; clearTimeout(saveT); saveT = setTimeout(flush, 400);
   }
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flush(); });

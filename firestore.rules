@@ -1,0 +1,18 @@
+rules_version = '2';
+// Paste into Firebase console → Firestore → Rules, then Publish.
+// Each account can only read and change its own settings document. Saving needs a confirmed email
+// (Google accounts are confirmed already), only the expected fields, and at most 60 picks.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid} {
+      allow read, delete: if request.auth != null && request.auth.uid == uid;
+      allow create, update: if request.auth != null && request.auth.uid == uid
+        && request.auth.token.email_verified == true
+        && request.resource.data.keys().hasOnly(['watch', 'theme', 'cb', 'copts', 'updated'])
+        && (!('watch' in request.resource.data) || (request.resource.data.watch is list && request.resource.data.watch.size() <= 60))
+        && (!('theme' in request.resource.data) || (request.resource.data.theme is string && request.resource.data.theme.size() <= 20))
+        && (!('cb' in request.resource.data) || request.resource.data.cb is bool)
+        && (!('copts' in request.resource.data) || request.resource.data.copts is map);
+    }
+  }
+}

@@ -1,4 +1,40 @@
 {
   "outputDirectory": "public",
-  "functions": { "api/quotes.js": { "maxDuration": 20 } }
+  "functions": {
+    "api/quotes.js": {
+      "maxDuration": 20
+    }
+  },
+  "cleanUrls": true,
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; script-src 'self' 'sha256-TSHNFBBV8BI8FQxgM4Wj8NxMACbQpJLIB/Yn3sINPDs=' 'sha256-YMFA1KYDfHEGw2L+z67FXLMDu9bMuDu68HWwl6E9jkE=' 'sha256-kgz/M94BcS+O2LiTgDmn3D2TtMs3GehV7kgoejo3ens=' https://cdn.jsdelivr.net https://www.gstatic.com https://apis.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self' https://cdn.jsdelivr.net https://*.googleapis.com https://apis.google.com https://www.gstatic.com; frame-src https://world-markets-27f52.firebaseapp.com https://accounts.google.com https://apis.google.com; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "Cross-Origin-Opener-Policy",
+          "value": "same-origin-allow-popups"
+        },
+        {
+          "key": "Permissions-Policy",
+          "value": "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()"
+        }
+      ]
+    }
+  ]
 }

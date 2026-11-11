@@ -27,6 +27,7 @@
     email: u.email || "",
     photo: u.photoURL || "",
     google: (u.providerData || []).some((p) => p.providerId === "google.com"),
+    verified: !!u.emailVerified,
   };
 
   const local = ["localhost", "127.0.0.1"].includes(location.hostname);
@@ -60,6 +61,9 @@
         au.sendEmailVerification(c.user).catch(() => {});
       },
       resetPassword: (email) => au.sendPasswordResetEmail(auth, email),
+      resendVerification: () => au.sendEmailVerification(auth.currentUser),
+      // after the visitor clicks the link in the email: fetch the new state and a token that carries it
+      refresh: async () => { const u = auth.currentUser; if (!u) return; await u.reload(); await u.getIdToken(true); set(shape(auth.currentUser)); },
       signOut: () => au.signOut(auth),
       deleteAccount: async () => {
         const u = auth.currentUser;
@@ -84,9 +88,11 @@
     const signIn = (u) => { write(KEY, u); set(u); };
     Object.assign(A, {
       token: async () => (A.user ? "mock-" + A.user.uid : null),
-      signInGoogle: async () => signIn({ uid: "demo", name: "Demo User", email: "demo@example.com", photo: "", google: true }),
-      signInEmail: async (email, pw) => { if (!/@/.test(email)) fail("auth/invalid-email"); if (pw.length < 6) fail("auth/invalid-credential"); signIn({ uid: "demo", name: email.split("@")[0], email, photo: "", google: false }); },
-      signUpEmail: async (email, pw, name) => { if (!/@/.test(email)) fail("auth/invalid-email"); if (pw.length < 6) fail("auth/weak-password"); signIn({ uid: "demo", name: name || email.split("@")[0], email, photo: "", google: false }); },
+      signInGoogle: async () => signIn({ uid: "demo", name: "Demo User", email: "demo@example.com", photo: "", google: true, verified: true }),
+      signInEmail: async (email, pw) => { if (!/@/.test(email)) fail("auth/invalid-email"); if (pw.length < 6) fail("auth/invalid-credential"); signIn({ uid: "demo", name: email.split("@")[0], email, photo: "", google: false, verified: true }); },
+      signUpEmail: async (email, pw, name) => { if (!/@/.test(email)) fail("auth/invalid-email"); if (pw.length < 6) fail("auth/weak-password"); signIn({ uid: "demo", name: name || email.split("@")[0], email, photo: "", google: false, verified: false }); },
+      resendVerification: async () => {},
+      refresh: async () => { const u = read(KEY); if (u) { u.verified = true; signIn(u); } },
       resetPassword: async (email) => { if (!/@/.test(email)) fail("auth/invalid-email"); },
       signOut: async () => { write(KEY, null); set(null); },
       deleteAccount: async () => { write(DOC, null); write(KEY, null); set(null); },

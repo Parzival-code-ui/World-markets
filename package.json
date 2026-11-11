@@ -8,7 +8,8 @@
     "demo": "MOCK=1 node server.js",
     "check": "node scripts/check-symbols.js",
     "test": "node --test tests/*.test.js",
-    "smoke": "node tests/smoke.mjs"
+    "smoke": "node tests/smoke.mjs",
+    "csp": "node scripts/csp.js"
   },
   "engines": {
     "node": ">=18"

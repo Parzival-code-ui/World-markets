@@ -7,10 +7,13 @@ const path = require("path");
 const PORT = process.env.PORT || 3000;
 const ROOT = path.join(__dirname, "public");
 const API = path.join(__dirname, "api");
+// the same security headers Vercel sends (vercel.json), so local testing catches anything they block
+const HEADERS = (() => { try { return JSON.parse(fs.readFileSync(path.join(__dirname, "vercel.json"), "utf8")).headers[0].headers; } catch (e) { return []; } })();
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".png": "image/png", ".webmanifest": "application/manifest+json", ".txt": "text/plain", ".xml": "application/xml" };
 
 http.createServer(async (req, res) => {
   const u = new URL(req.url, "http://localhost");
+  for (const h of HEADERS) res.setHeader(h.key, h.key === "Content-Security-Policy" ? h.value.replace("; upgrade-insecure-requests", "") : h.value);
   const m = /^\/api\/([a-z-]+)$/.exec(u.pathname);
   if (m) {
     const f = path.join(API, m[1] + ".js");

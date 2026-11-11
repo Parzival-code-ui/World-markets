@@ -13,6 +13,7 @@ try {
     const page = await browser.newPage({ viewport: { width: w, height: h } });
     const errors = [];
     page.on("pageerror", (e) => errors.push(String(e)));
+    page.on("console", (m) => { if (/Content Security Policy/i.test(m.text())) errors.push("CSP: " + m.text()); });
     await page.route("**/data/firebase.js", (r) => r.fulfill({ body: "window.FIREBASE_CONFIG=null;", contentType: "text/javascript" }));
     await page.route("https://fonts.g*/**", (r) => r.abort());
     // signed out: homepage works and charts open
@@ -29,6 +30,12 @@ try {
     // personal pages ask for an account
     await page.goto(base + "/#mine"); await page.waitForTimeout(400);
     if (!(await page.locator(".locked-panel").count())) fail("My markets should ask visitors to sign in");
+    // an email account that hasn't confirmed its address is asked to first
+    await page.evaluate(() => localStorage.setItem("wm-demo-user", JSON.stringify({ uid: "demo", name: "New", email: "n@example.com", photo: "", google: false, verified: false })));
+    await page.reload(); await page.waitForTimeout(700);
+    if (!(await page.locator("[data-verified]").count())) fail("unconfirmed email account was not asked to confirm");
+    await page.locator("[data-verified]").click(); await page.waitForTimeout(500);
+    if (await page.locator("[data-verified]").count()) fail("confirming the email did not unlock My markets");
     // sign in (demo) and pick something
     await page.evaluate(() => localStorage.setItem("wm-demo-user", JSON.stringify({ uid: "demo", name: "Demo", email: "d@example.com", photo: "", google: false, verified: true })));
     await page.reload(); await page.waitForTimeout(900);
