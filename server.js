@@ -1,25 +1,25 @@
-// Local dev server: `npm start` → http://localhost:3000
-// Serves /public and the same /api/quotes function Vercel runs.
+// Local dev server: `npm start` → http://localhost:3000 (`npm run demo` for made-up prices)
+// Serves /public and runs the same /api functions Vercel runs.
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const quotes = require("./api/quotes");
-const chart = require("./api/chart");
-const fundamentals = require("./api/fundamentals");
-const search = require("./api/search");
 
 const PORT = process.env.PORT || 3000;
 const ROOT = path.join(__dirname, "public");
-const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml", ".ico": "image/x-icon" };
+const API = path.join(__dirname, "api");
+const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".png": "image/png", ".webmanifest": "application/manifest+json", ".txt": "text/plain", ".xml": "application/xml" };
 
 http.createServer(async (req, res) => {
   const u = new URL(req.url, "http://localhost");
-  if (u.pathname === "/api/quotes") return quotes(req, res);
-  if (u.pathname === "/api/chart") return chart(req, res);
-  if (u.pathname === "/api/fundamentals") return fundamentals(req, res);
-  if (u.pathname === "/api/search") return search(req, res);
+  const m = /^\/api\/([a-z-]+)$/.exec(u.pathname);
+  if (m) {
+    const f = path.join(API, m[1] + ".js");
+    if (fs.existsSync(f)) return require(f)(req, res);
+    res.statusCode = 404; return res.end("Not found");
+  }
   let p = path.normalize(path.join(ROOT, u.pathname === "/" ? "index.html" : u.pathname));
   if (!p.startsWith(ROOT)) { res.statusCode = 403; return res.end(); }
+  if (!path.extname(p) && fs.existsSync(p + ".html")) p += ".html"; // /about → about.html, like Vercel's cleanUrls
   fs.readFile(p, (err, buf) => {
     if (err) { res.statusCode = 404; return res.end("Not found"); }
     res.setHeader("Content-Type", TYPES[path.extname(p)] || "application/octet-stream");

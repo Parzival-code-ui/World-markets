@@ -93,7 +93,10 @@ async function pool(items, n, fn) {
   return out;
 }
 
-module.exports = async function handler(req, res) {
+// open to everyone, with a per-visitor rate limit (see _auth.js)
+const { limited } = require("./_auth");
+
+module.exports = limited(async function handler(req, res) {
   const q = req.query && req.query.symbols != null
     ? req.query.symbols
     : new URL(req.url, "http://x").searchParams.get("symbols");
@@ -112,4 +115,4 @@ module.exports = async function handler(req, res) {
   res.setHeader("Content-Type", "application/json");
   res.setHeader("Cache-Control", "public, s-maxage=60, stale-while-revalidate=300");
   res.end(JSON.stringify({ mock, fetchedAt: Date.now(), quotes }));
-};
+}, 60);

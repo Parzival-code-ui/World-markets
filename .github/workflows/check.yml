@@ -1,0 +1,22 @@
+name: Check
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax
+        run: for f in api/*.js public/*.js public/lib/*.js public/data/*.js server.js; do node --check "$f"; done
+      - name: Unit tests
+        run: npm test
+      - name: Browser smoke test
+        run: |
+          npm install --no-save playwright@1
+          npx playwright install --with-deps chromium
+          npm run smoke

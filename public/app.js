@@ -8,11 +8,11 @@
   // accounts (auth.js): most of the site needs a signed-in visitor; the homepage stays open as a preview
   const AU = window.WMAuth || { user: null, known: true, ready: Promise.resolve(null), onChange() {}, token: async () => null, load: async () => null, save: async () => {} };
   const authed = () => !!AU.user;
-  const LOCKED = ["mine", "map", "heat", "table", "stocks", "cal", "india"];
+  const LOCKED = ["mine"]; // market data is open to everyone; the account holds what is personal
   async function authFetch(url) {
     const t = await AU.token().catch(() => null);
     const r = await fetch(url, t ? { headers: { Authorization: "Bearer " + t } } : {});
-    if (r.status === 401 && AU.user) toast("Your sign-in has expired. Sign in again to continue.");
+    if (r.status === 429) toast("Too many requests from this device. Wait a minute and try again.");
     return r;
   }
   const store = { get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
@@ -67,34 +67,12 @@
   const cls = (v) => (v == null || !isFinite(v) ? "na" : v > 0 ? "up" : v < 0 ? "down" : "flat");
   const sym = (s, inner, extra = "") => `<a href="${yurl(s)}" data-sym="${esc(s)}" class="lnk ${extra}">${inner}</a>`;
   // currency signs: shares, commodities, currencies and crypto get their currency; index levels are points, yields are %
-  const CSIGN = { USD: "$", INR: "₹", GBP: "£", EUR: "€", JPY: "¥", CNY: "¥", HKD: "HK$", TWD: "NT$", KRW: "₩", SGD: "S$", AUD: "A$", CAD: "C$", NZD: "NZ$",
-    BRL: "R$", MXN: "MX$", CHF: "CHF ", ZAR: "R", TRY: "₺", ILS: "₪", PHP: "₱", THB: "฿", VND: "₫", IDR: "Rp ", MYR: "RM ", PKR: "Rs ", SAR: "SAR ", AED: "AED ",
-    SEK: "kr ", DKK: "kr ", NOK: "kr ", PLN: "zł ", EGP: "E£", ARS: "AR$", CLP: "CLP$" };
-  const RATE_SYMS = new Set(["^IRX", "^FVX", "^TNX", "^TYX"]);
   const INDEX_SET = new Set(["DX-Y.NYB"]);
   M.forEach((c) => c.indices.forEach(([x]) => INDEX_SET.add(x)));
   IN.headline.forEach(([x]) => INDEX_SET.add(x));
   IN.sectors.forEach(([x]) => INDEX_SET.add(x));
-  function curOf(s) {
-    const c = Qv(s).currency;
-    if (c) return c;
-    let m;
-    if ((m = /^([A-Z]{3})?([A-Z]{3})=X$/.exec(s))) return m[2]; // XXX=X is XXX per dollar; EURUSD=X is dollars per euro
-    if (/-USD$/.test(s) || /=F$/.test(s)) return "USD";
-    if (/\.(NS|BO)$/.test(s)) return "INR";
-    return null;
-  }
-  function affix(s) {
-    if (RATE_SYMS.has(s)) return ["", "%"];
-    if (s[0] === "^" || (INDEX_SET.has(s) && !/=X$/.test(s))) return ["", ""];
-    const c = curOf(s);
-    if (!c) return ["", ""];
-    if (c === "GBp" || c === "GBX") return ["", "p"];
-    if (c === "USX") return ["", "¢"];
-    if (c === "ZAc" || c === "ZAC") return ["", "c"];
-    if (c === "ILA") return ["", " ag"];
-    return CSIGN[c] ? [CSIGN[c], ""] : ["", " " + c];
-  }
+  const curOf = (s) => C.currencyOf(s, Qv(s).currency);
+  const affix = (s) => C.affix(s, Qv(s).currency, INDEX_SET.has(s));
   // a price as text with its sign, for one-off places (search lists, chart sheet)
   const money2 = (s, v, d) => { if (v == null || !isFinite(v)) return fmt(v, d); const [a, b] = affix(s); return a + fmt(v, d) + b; };
   const affixAttrs = (s) => { const [a, b] = affix(s); return `data-pre="${esc(a)}" data-suf="${esc(b)}"`; };
@@ -134,68 +112,12 @@
     return `--tile:rgb(${c.join(",")});--tile-ink:${lum > 0.6 ? "#0f172a" : "#fff"}`;
   }
 
-  // ── time zones & market hours ────────────────────────────────────────────
-  const WDN = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-  const tzCache = {};
-  function localParts(tz, now = new Date()) {
-    const f = tzCache[tz] || (tzCache[tz] = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }));
-    const p = Object.fromEntries(f.formatToParts(now).map((x) => [x.type, x.value]));
-    const hh = +p.hour % 24;
-    return { wd: WDN[p.weekday], min: hh * 60 + +p.minute, label: String(hh).padStart(2, "0") + ":" + p.minute, y: +p.year, mo: +p.month, d: +p.day };
-  }
-  function tzOffsetMin(tz, now = new Date()) {
-    const p = localParts(tz, now);
-    const asUTC = Date.UTC(p.y, p.mo - 1, p.d, Math.floor(p.min / 60), p.min % 60);
-    return Math.round((asUTC - Math.floor(now.getTime() / 60000) * 60000) / 60000);
-  }
-  const toMin = (s) => { const [h, m] = s.split(":").map(Number); return h * 60 + m; };
-  function dur(m) {
-    if (!isFinite(m)) return "—";
-    const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mm = m % 60;
-    return d ? `${d}d ${h}h` : h ? `${h}h ${mm}m` : `${mm}m`;
-  }
-  // exchange holidays and early closes (data/holidays.js); beyond a market's `through` date, regular hours apply
+  // ── time zones & market hours (logic lives in lib/core.js) ───────────────
+  const C = window.WMCore;
   const HOL = window.HOLIDAYS || {};
-  const ymd = (y, m, d) => new Date(Date.UTC(y, m - 1, d)).toISOString().slice(0, 10);
-  function holidayOn(c, date) {
-    const h = HOL[c.id];
-    if (!h || date > h.through) return null;
-    const v = h.days[date];
-    return !v ? null : Array.isArray(v) ? { early: toMin(v[0]), at: v[0], name: v[1] } : { name: v };
-  }
-  // today's sessions in local minutes, cut short on an early-close day
-  function sessionsOn(c, hol) {
-    let ses = c.sessions.map(([a, b]) => [toMin(a), toMin(b)]);
-    if (hol && hol.early != null) ses = ses.filter(([a]) => a < hol.early).map(([a, b]) => [a, Math.min(b, hol.early)]);
-    return ses;
-  }
-  function status(c) {
-    const { wd, min, label, y, mo, d } = localParts(c.tz);
-    const hol = holidayOn(c, ymd(y, mo, d));
-    const shut = hol && hol.early == null && c.days.includes(wd);
-    const ses = sessionsOn(c, hol);
-    if (c.days.includes(wd) && !shut && ses.length) {
-      for (const [a, b] of ses) if (min >= a && min < b) {
-        const early = hol && hol.early != null;
-        return { kind: "open", text: "Open", mins: b - min, sub: early ? `Closes early at ${hol.at} for ${hol.name}, in ${dur(b - min)}` : "Closes in " + dur(b - min), label, early: early ? hol.name : null };
-      }
-      if (min >= ses[0][0] && min < ses[ses.length - 1][1]) {
-        const next = ses.find(([a]) => a > min);
-        return { kind: "lunch", text: "Lunch break", mins: next[0] - min, sub: "Reopens in " + dur(next[0] - min), label };
-      }
-    }
-    // next opening, skipping weekends and full-day holidays
-    let best = Infinity;
-    for (let k = 0; k < 12; k++) {
-      if (!c.days.includes((wd + k) % 7)) continue;
-      const h2 = holidayOn(c, ymd(y, mo, d + k));
-      if (h2 && h2.early == null) continue;
-      const m = k * 1440 + toMin(c.sessions[0][0]) - min;
-      if (m > 0) { best = m; break; }
-    }
-    if (shut) return { kind: "closed", text: "Holiday", holiday: hol.name, mins: best, sub: `Closed for ${hol.name}. Opens in ${dur(best)}`, label };
-    return { kind: "closed", text: "Closed", mins: best, sub: "Opens in " + dur(best), label };
-  }
+  const { localParts, tzOffsetMin, toMin, dur, ymd, sessionsOn } = C;
+  const holidayOn = (c, date) => C.holidayOn(c, date, HOL);
+  const status = (c) => C.status(c, HOL);
   const isLive = (c) => ["open", "lunch"].includes(status(c).kind);
 
   // ── data ─────────────────────────────────────────────────────────────────
@@ -253,7 +175,6 @@
   const fundBusy = new Set();
   let fundErr = null;
   function ensureFund(list) {
-    if (!authed()) return;
     const all = list.filter((s) => !fundBusy.has(s) && !(state.fundT[s] && Date.now() - state.fundT[s] < 3600e3));
     for (let i = 0; i < all.length; i += 50) fundBatch(all.slice(i, i + 50)); // the service takes up to 60 at a time
   }
@@ -410,7 +331,14 @@
   function renderWatch() {
     const el = $("#watch");
     if (!el) return;
-    el.hidden = !watch.length || !authed();
+    // visitors get one line on what an account adds, until they close it
+    if (!authed()) {
+      el.hidden = !AU.known || !!store.get("wm-join-x") || !!AU.unavailable;
+      el.innerHTML = el.hidden ? "" : `<div class="join"><p><b>Make your own list.</b> A free account keeps the markets you follow at the top of this page and tracks what you've bought, on your phone and laptop.</p>
+        <button class="btn primary" data-signin="join">Create a free account</button><button class="mc-x join-x" aria-label="Close" data-joinx><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 6 8 8M14 6l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>`;
+      return;
+    }
+    el.hidden = !watch.length;
     if (el.hidden) { el.innerHTML = ""; return; }
     el.innerHTML = `<div class="watch-h"><h2>My markets</h2><button class="linkbtn" data-goview="mine">Add or remove</button></div>
       <div class="watch-row">${watch.map((w) => `<a class="wcard" href="${yurl(w.s)}" data-sym="${esc(w.s)}">
@@ -676,12 +604,7 @@
   const CAL_KINDS = [["all", "Everything"], ["rate", "Interest rates"], ["cpi", "Inflation"], ["results", "Company results"], ["holiday", "Market holidays"]];
   const CAL_LABEL = { rate: "Interest rates", cpi: "Inflation", results: "Results", holiday: "Holiday" };
   // a wall-clock time in some time zone, as a moment
-  function zonedEpoch(date, hhmm, tz) {
-    const [y, m, d] = date.split("-").map(Number), [h, mi] = (hhmm || "12:00").split(":").map(Number);
-    let t = Date.UTC(y, m - 1, d, h, mi);
-    for (let k = 0; k < 2; k++) t = Date.UTC(y, m - 1, d, h, mi) - tzOffsetMin(tz, new Date(t)) * 60000;
-    return t;
-  }
+  const zonedEpoch = C.zonedEpoch;
   const localDay = (t) => new Date(t).toLocaleDateString("en-CA"); // YYYY-MM-DD in the viewer's zone
   function calEvents() {
     const ev = [];
@@ -847,7 +770,6 @@
   // chart overlays the visitor has switched on, remembered in this browser
   const copts = Object.assign({ vol: true, ma50: true, ma200: true }, store.get("wm-copts") || {});
   function openChart(s, viaKeyboard, keepCmp) {
-    if (!authed()) { pendingChart = { s, range: modal.range, cmp: keepCmp ? modal.cmp : null }; return openAuth("chart", NAMES[s] ? NAMES[s].name : tickerOf(s)); }
     if (modal.sym !== s && !keepCmp) modal.cmp = null;
     modal.sym = s; modal.lastFocus = document.activeElement;
     const m = $("#modal"); m.hidden = false; requestAnimationFrame(() => m.classList.add("in"));
@@ -1259,7 +1181,6 @@
   const remoteCache = {};
   let remoteT;
   function remoteFor(q) {
-    if (!authed()) return "signin";
     q = q.trim().toLowerCase();
     if (q.length < 2) return [];
     if (remoteCache[q]) return remoteCache[q];
@@ -1609,7 +1530,10 @@
 
   // ── accounts ─────────────────────────────────────────────────────────────
   let pendingChart = null, authMode = "in", authWhy = null;
+  document.addEventListener("click", (e) => { if (e.target.closest("[data-joinx]")) { store.set("wm-join-x", 1); renderWatch(); } });
   const WHY = {
+    join: () => "Keep your own list of markets and track what you've bought.",
+    mine: () => "Sign in to keep your own list of markets and track what you've bought.",
     chart: (n) => `Sign in to open the chart${n ? " for " + n : ""}.`,
     view: () => "Sign in to see this part of World Markets.",
     watch: () => "Sign in to keep a watchlist.",
@@ -1629,7 +1553,7 @@
     main.innerHTML = `<div class="locked-panel">
       <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8.5 10.5V7.8a3.5 3.5 0 0 1 7 0v2.7" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
       <h2>${esc(t)}</h2><p>${esc(d)}</p>
-      ${AU.known ? `<button class="btn primary" data-signin="view">Sign in to continue</button><p class="muted small">Free. Use your Google account or an email and password.</p>`
+      ${AU.known ? `<button class="btn primary" data-signin="${state.view === "mine" ? "mine" : "view"}">Sign in to continue</button><p class="muted small">Free. Use your Google account or an email and password.</p>`
         : `<p class="muted small">Checking whether you're signed in…</p>`}
     </div>`;
   }
@@ -1638,7 +1562,7 @@
   function openAuth(why, name) {
     authWhy = why;
     $("#auth-why").textContent = AU.unavailable || (WHY[why] || WHY.view)(name);
-    setAuthMode("in");
+    setAuthMode(why === "join" ? "up" : "in");
     authFocus = document.activeElement;
     authEl.hidden = false; requestAnimationFrame(() => authEl.classList.add("in"));
     document.body.classList.add("locked");
@@ -1831,8 +1755,8 @@
       const a = e.target.closest("[data-sym]");
       clearTimeout(ht);
       if (a) ht = setTimeout(() => {
-        if (authed()) getChart(a.dataset.sym, modal.range).catch(() => {});
-        if (authed() && STOCK_SET.has(a.dataset.sym)) getFundDetail(a.dataset.sym).catch(() => {});
+        getChart(a.dataset.sym, modal.range).catch(() => {});
+        if (STOCK_SET.has(a.dataset.sym)) getFundDetail(a.dataset.sym).catch(() => {});
       }, 120);
     });
   }

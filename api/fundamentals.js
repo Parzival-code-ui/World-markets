@@ -200,10 +200,10 @@ function send(res, code, body, ttl) {
   res.end(JSON.stringify(body));
 }
 
-// signed-in visitors only (see _auth.js)
-const { requireUser } = require("./_auth");
+// open to everyone, with a per-visitor rate limit (see _auth.js)
+const { limited } = require("./_auth");
 
-module.exports = requireUser(async function handler(req, res) {
+module.exports = limited(async function handler(req, res) {
   const qs = req.query || Object.fromEntries(new URL(req.url, "http://x").searchParams);
   const mock = process.env.MOCK === "1";
   try {
@@ -220,4 +220,4 @@ module.exports = requireUser(async function handler(req, res) {
   } catch (e) {
     return send(res, 502, { error: String(e.message || e) });
   }
-});
+}, 60);

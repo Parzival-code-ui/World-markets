@@ -1,4 +1,4 @@
-// Checks that a request comes from a signed-in visitor.
+// Request checks for the API: who is asking (verify) and how often (limited).
 // The browser sends its Firebase ID token as "Authorization: Bearer <token>"; we verify the token's
 // signature against Google's published keys, so no secret or service account is needed here.
 // Files starting with "_" in /api are helpers, not public endpoints.
@@ -80,4 +80,36 @@ function requireUser(handler, ttlSec = 60) {
   };
 }
 
-module.exports = { verify, requireUser };
+module.exports = { verify, requireUser, limited };
+
+
+// Rate limit for the public data endpoints. Most answers come from Vercel's shared cache and never reach
+// this code; what does reach it (new searches, unusual symbols) is limited per visitor: per signed-in
+// account when a token is sent, otherwise per IP address. Counts live in each warm instance, which is
+// enough to stop one client hammering Yahoo through us.
+const hits = new Map();
+function clientKey(req, user) {
+  if (user) return "u:" + user.sub;
+  const f = (req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return "ip:" + (req.headers["x-real-ip"] || f || (req.socket && req.socket.remoteAddress) || "?");
+}
+function limited(handler, perMinute = 60) {
+  return async function (req, res) {
+    const user = await verify(req).catch(() => null);
+    req.user = user;
+    const key = clientKey(req, user), now = Date.now();
+    let h = hits.get(key);
+    if (!h || now - h.t > 60000) { h = { t: now, n: 0 }; hits.set(key, h); }
+    h.n++;
+    if (hits.size > 5000) for (const [k, v] of hits) if (now - v.t > 60000) hits.delete(k);
+    const cap = user ? perMinute * 2 : perMinute;
+    if (h.n > cap) {
+      res.statusCode = 429;
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Retry-After", String(Math.ceil((h.t + 60000 - now) / 1000)));
+      return res.end(JSON.stringify({ error: "Too many requests. Wait a minute and try again." }));
+    }
+    return handler(req, res);
+  };
+}
