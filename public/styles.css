@@ -738,3 +738,11 @@ a.ev:hover { background: var(--wash); }
   .lot label:first-of-type { grid-column: 1 / -1; padding-right: 30px; }
   .hs-alloc { grid-template-columns: 1fr; }
 }
+
+/* phones: the tab row scrolls; fade the edge so it's clear there's more */
+@media (max-width: 760px) {
+  .tabs { -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent); mask-image: linear-gradient(90deg, #000 85%, transparent); scroll-padding: 0 40px; }
+  .tabs.at-end { -webkit-mask-image: none; mask-image: none; }
+  .tabs button { padding: 10px 11px 14px; font-size: 14.5px; }
+}
+.foot a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }

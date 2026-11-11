@@ -1065,6 +1065,7 @@
     tip.style.top = Math.max(0, (y / H) * r.height - 76) + "px";
   };
 
+  const RANGE_WORDS = { "1d": "today", "5d": "past 5 days", "1mo": "past month", "6mo": "past 6 months", "1y": "past year", "5y": "past 5 years" };
   function drawSvgChart(d, range) {
     const box = $("#m-chart"), pts = d.points || [];
     if (pts.length < 2) { box.innerHTML = '<div class="empty">Yahoo Finance has no history for this range. Try a longer one.</div>'; return; }
@@ -1098,7 +1099,13 @@
     const nT = Math.min(W < 500 ? 4 : 6, pts.length);
     for (let k = 0; k < nT; k++) { const i = Math.round((k / (nT - 1)) * (pts.length - 1)); xl += `<text x="${X(i)}" y="${H - 6}" class="gt" text-anchor="${k === 0 ? "start" : k === nT - 1 ? "end" : "middle"}">${fmtX(xs[i])}</text>`; }
     const prev = range === "1d" && d.prevClose ? `<line x1="${L}" x2="${W - R}" y1="${Y(d.prevClose)}" y2="${Y(d.prevClose)}" class="prev"/><text x="${L + 4}" y="${Y(d.prevClose) - 6}" class="gt">Yesterday's close</text>` : "";
-    box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" id="m-svg" role="img" aria-label="Price chart of ${esc(nameOf(modal.sym))}">
+    // the same chart as words and a table, for screen readers
+    const hiI = ys.indexOf(Math.max(...ys)), loI = ys.indexOf(Math.min(...ys)), chg = ((ys[ys.length - 1] - base) / base) * 100;
+    const summary = `${nameOf(modal.sym)}, ${RANGE_WORDS[range] || range}: ${chg >= 0 ? "up" : "down"} ${Math.abs(chg).toFixed(2)}%, from ${money2(modal.sym, base)} to ${money2(modal.sym, ys[ys.length - 1])}. High ${money2(modal.sym, ys[hiI])} on ${whenFmt(xs[hiI], range, tz)}, low ${money2(modal.sym, ys[loI])} on ${whenFmt(xs[loI], range, tz)}.`;
+    const every = Math.max(1, Math.ceil(pts.length / 24));
+    const srRows = pts.filter((_, i) => i % every === 0 || i === pts.length - 1).map((p) => `<tr><td>${whenFmt(p[0], range, tz)}</td><td>${money2(modal.sym, p[1])}</td></tr>`).join("");
+    box.innerHTML = `<p class="vh" id="m-sum">${esc(summary)}</p><table class="vh"><caption>${esc(nameOf(modal.sym))} prices</caption><thead><tr><th>When</th><th>Price</th></tr></thead><tbody>${srRows}</tbody></table>
+      <svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" id="m-svg" role="img" aria-labelledby="m-sum">
       <defs><linearGradient id="gfill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".3"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
       ${grid}${prev}${vol}<path d="${area}" fill="url(#gfill)" class="area"/>
       ${m200 ? `<path d="${maPath(m200)}" class="ma ma200"/>` : ""}${m50 ? `<path d="${maPath(m50)}" class="ma ma50"/>` : ""}
@@ -1184,6 +1191,8 @@
     state.view = v;
     document.querySelectorAll("#views button").forEach((x) => { const on = x.dataset.view === v; x.classList.toggle("on", on); x.setAttribute("aria-selected", on); });
     moveInk();
+    const on = document.querySelector("#views button.on");
+    if (on && on.scrollIntoView) on.scrollIntoView({ block: "nearest", inline: "nearest", behavior: REDUCED ? "auto" : "smooth" });
     writeHash();
     const go = () => renderMain();
     if (document.startViewTransition && !REDUCED && !opts.instant) document.startViewTransition(go); else go();
@@ -2018,7 +2027,14 @@
     } else if (modal.sym) closeChart();
   }
   window.addEventListener("hashchange", () => applyHash(false));
+  // tab row on phones: drop the edge fade once scrolled to the end
+  const tabsEl = $("#views");
+  const tabEnd = () => tabsEl.classList.toggle("at-end", tabsEl.scrollLeft + tabsEl.clientWidth >= tabsEl.scrollWidth - 4);
+  tabsEl.addEventListener("scroll", tabEnd, { passive: true }); addEventListener("resize", tabEnd);
+  // keep working offline (sw.js): the page and its files come from the cache when there's no connection
+  if ("serviceWorker" in navigator && location.protocol === "https:") addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
   render();
+  tabEnd();
   if (AU.known) applyHash(true); else { const v = readHash().view; if (v !== state.view) setView(v, { instant: true }); }
   AU.onChange(onAuth);
   requestAnimationFrame(moveInk);

@@ -49,6 +49,7 @@ try {
     await page.locator(".lot [name=q]").first().fill("10");
     await page.locator(".hbox .btn.primary").click(); await page.waitForTimeout(400);
     if (!/average/.test(await page.locator("[data-pl='CL=F']").innerText())) fail("saved buy didn't show on the card");
+    for (const pth of ["/about", "/privacy"]) { const r = await page.goto(base + pth); if (!r.ok()) fail(pth + " did not load"); }
     if (errors.length) fail(`${w}px page errors: ${errors.join(" | ")}`);
     await page.close();
   }

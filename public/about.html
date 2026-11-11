@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>About · World Markets</title>
+<meta name="description" content="What World Markets is, where its numbers come from, and how it's built." />
+<link rel="icon" href="icon.svg" />
+<script>
+  try {
+    var p = JSON.parse(localStorage.getItem("wm-theme")) || "auto";
+    if (p === "auto") p = matchMedia("(prefers-color-scheme: light)").matches ? "day" : "night";
+    document.documentElement.dataset.theme = p;
+  } catch (e) {}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&display=swap" />
+<link rel="stylesheet" href="styles.css" />
+<style>
+  .doc { max-width: 680px; margin: 0 auto; padding: 40px 24px 80px; line-height: 1.6; }
+  .doc h1 { font-size: clamp(28px, 4vw, 38px); letter-spacing: -.02em; margin: 24px 0 8px; }
+  .doc h2 { font-size: 19px; margin: 32px 0 6px; }
+  .doc p, .doc li { color: var(--text); }
+  .doc .muted { color: var(--muted); }
+  .doc a { color: var(--sun); }
+  .doc ul { padding-left: 20px; }
+  .back { font-weight: 600; text-decoration: none; }
+</style>
+</head>
+<body>
+<main class="doc">
+  <a class="back" href="/">← Back to World Markets</a>
+  <h1>About World Markets</h1>
+  <p class="muted">A student project by a BSc Finance student in Bengaluru.</p>
+
+  <h2>What it is</h2>
+  <p>One page that answers "what's trading right now, and how is it doing?" for stock markets around the world, with India in depth. It's built for an Indian investor looking outward: returns can be shown in rupees, the India tab has global cues before the open and Indian shares listed in New York, and the portfolio tracker adds everything up in rupees.</p>
+
+  <h2>Where the numbers come from</h2>
+  <ul>
+    <li><b>Prices, charts, company data and search:</b> Yahoo Finance. Some exchanges are delayed 15 to 20 minutes. Yahoo doesn't offer an official public API, so this site reads the same data its own pages use. It's fine for learning; a commercial version would need a licensed data feed.</li>
+    <li><b>Market hours and holidays:</b> each exchange's published calendar, entered by hand.</li>
+    <li><b>Economic calendar:</b> RBI, US Federal Reserve, ECB, Bank of England, Bank of Japan, US BLS and BEA, and India's MoSPI release calendars.</li>
+    <li><b>Economy figures:</b> IMF World Economic Outlook, October 2026. Policy rates and non-US bond yields are updated by hand.</li>
+    <li><b>Estimates:</b> where Yahoo gives no market cap (often for NSE shares), it's estimated from profit, earnings per share and price, and marked ≈.</li>
+  </ul>
+
+  <h2>How it's built</h2>
+  <ul>
+    <li>A plain HTML, CSS and JavaScript front end, with no framework, so the page stays small and fast.</li>
+    <li>Small server functions on Vercel fetch and tidy the data, with shared caching and per-visitor rate limits.</li>
+    <li>Accounts use Firebase Authentication (Google or email); each person's picks and holdings are one Firestore document that only they can read.</li>
+    <li>Market-hours, currency and portfolio maths (including XIRR) live in one tested module. Every change runs unit tests and a browser test on GitHub before it goes live.</li>
+    <li>Errors on visitors' devices are reported to the server log, and a strict Content Security Policy limits what the page can load.</li>
+  </ul>
+  <p>The code is public: <a href="https://github.com/Parzival-code-ui/World-markets">github.com/Parzival-code-ui/World-markets</a>.</p>
+
+  <h2>Limits</h2>
+  <p>This is for information and learning, not investment advice, and nothing here is a recommendation to buy or sell. Data can be late or wrong; check with your broker before you act on a number.</p>
+
+  <p><a href="/privacy">Privacy</a></p>
+</main>
+</body>
+</html>
