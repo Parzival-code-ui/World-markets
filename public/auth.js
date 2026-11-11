@@ -16,7 +16,13 @@
     token: async () => null,
     load: async () => null,
     save: async () => {},
+    // access: "approved", "pending", "denied" or "none"; the owner approves everyone else
+    access: async () => "none",
+    onAccess() {},
+    listAccess: async () => [],
+    setAccess: async () => {},
   });
+  const ADMIN = window.WM_ADMIN || "";
   const set = (u) => {
     A.user = u; A.known = true; resolveReady(u);
     listeners.forEach((fn) => { try { fn(u); } catch (e) { console.error(e); } });
@@ -28,6 +34,7 @@
     photo: u.photoURL || "",
     google: (u.providerData || []).some((p) => p.providerId === "google.com"),
     verified: !!u.emailVerified,
+    admin: !!ADMIN && u.uid === ADMIN,
   };
 
   const local = ["localhost", "127.0.0.1"].includes(location.hostname);
@@ -71,6 +78,28 @@
         await fs.deleteDoc(ref()).catch(() => {});
         await u.delete();
       },
+      // the visitor's own access entry, created as a request on first sign-in
+      access: async () => {
+        const u = auth.currentUser;
+        if (!u) return "none";
+        if (u.uid === ADMIN) return "approved";
+        const r = fs.doc(db, "access", u.uid);
+        const snap = await fs.getDoc(r);
+        if (snap.exists()) return snap.data().status || "pending";
+        await fs.setDoc(r, { status: "pending", email: u.email || "", name: u.displayName || "", requested: fs.serverTimestamp() });
+        return "pending";
+      },
+      // tell the page as soon as the owner decides
+      onAccess: (fn) => {
+        const u = auth.currentUser;
+        if (!u || u.uid === ADMIN) return () => {};
+        return fs.onSnapshot(fs.doc(db, "access", u.uid), (snap) => fn(snap.exists() ? snap.data().status || "pending" : "none"), () => {});
+      },
+      listAccess: async () => {
+        const snap = await fs.getDocs(fs.collection(db, "access"));
+        return snap.docs.map((d) => ({ uid: d.id, ...d.data(), requested: d.data().requested && d.data().requested.toMillis ? d.data().requested.toMillis() : null }));
+      },
+      setAccess: async (uid, status) => (status ? fs.updateDoc(fs.doc(db, "access", uid), { status, decided: fs.serverTimestamp() }) : fs.deleteDoc(fs.doc(db, "access", uid))),
       load: async () => { if (!auth.currentUser) return null; const s = await fs.getDoc(ref()); return s.exists() ? s.data() : null; },
       save: async (data) => { if (auth.currentUser) await fs.setDoc(ref(), { ...data, updated: fs.serverTimestamp() }, { merge: true }); },
     });
@@ -85,7 +114,7 @@
     const read = (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } };
     const write = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
     const fail = (code) => { const e = new Error(code); e.code = code; throw e; };
-    const signIn = (u) => { write(KEY, u); set(u); };
+    const signIn = (u) => { u.admin = u.uid === "demo"; write(KEY, u); set(u); };
     Object.assign(A, {
       token: async () => (A.user ? "mock-" + A.user.uid : null),
       signInGoogle: async () => signIn({ uid: "demo", name: "Demo User", email: "demo@example.com", photo: "", google: true, verified: true }),
@@ -98,7 +127,12 @@
       deleteAccount: async () => { write(DOC, null); write(KEY, null); set(null); },
       load: async () => read(DOC),
       save: async (data) => write(DOC, { ...(read(DOC) || {}), ...data }),
+      // demo: uids starting "pending" wait for approval; "demo" is the owner
+      access: async () => { const u = read(KEY); if (!u) return "none"; const a = read("wm-demo-access") || {}; return a[u.uid] || (u.uid.startsWith("pending") ? "pending" : "approved"); },
+      onAccess: () => () => {},
+      listAccess: async () => Object.entries(read("wm-demo-access") || { "pending-1": "pending" }).map(([uid, status]) => ({ uid, status, email: uid + "@example.com", name: uid, requested: Date.now() - 3600e3 })),
+      setAccess: async (uid, status) => { const a = read("wm-demo-access") || { "pending-1": "pending" }; if (status) a[uid] = status; else delete a[uid]; write("wm-demo-access", a); },
     });
-    setTimeout(() => set(read(KEY)), 150);
+    setTimeout(() => { const u = read(KEY); if (u) u.admin = u.uid === "demo"; set(u); }, 150);
   }
 })();

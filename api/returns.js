@@ -3,7 +3,8 @@
 // Each value is a fraction (0.12 = +12%), from daily closes over the last five years and a bit.
 // Cached for six hours: these numbers barely move within a day.
 
-const { limited } = require("./_auth");
+// approved accounts only, with a per-visitor rate limit (see _auth.js)
+const { limited, requireUser } = require("./_auth");
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36";
 const MAX = 80;
@@ -70,7 +71,7 @@ function mock(symbol) {
   return { last: 100, asOf: Math.floor(Date.now() / 1000), m1: r(1) / 6, ytd: r(3) / 2, y1: r(5) / 1.5, y3: r(7) * 1.4, y5: r(9) * 2, currency: null, mock: true };
 }
 
-module.exports = limited(async function handler(req, res) {
+module.exports = requireUser(limited(async function handler(req, res) {
   const u = new URL(req.url, "http://localhost");
   const list = [...new Set((u.searchParams.get("symbols") || "").split(",").map((s) => s.trim()).filter(Boolean))];
   if (!list.length) return send(res, 400, { error: "symbols required" });
@@ -85,6 +86,6 @@ module.exports = limited(async function handler(req, res) {
     }
   }));
   send(res, 200, { returns: out }, Object.values(out).some(Boolean) ? TTL : 60);
-}, 30);
+}, 30), 21600);
 
 module.exports.returnsFrom = returnsFrom;

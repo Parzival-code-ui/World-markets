@@ -746,3 +746,32 @@ a.ev:hover { background: var(--wash); }
   .tabs button { padding: 10px 11px 14px; font-size: 14.5px; }
 }
 .foot a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+
+/* ── private site: the gate in front of everything until the owner approves the account ── */
+.gate[hidden] { display: none; }
+body:not(.gated) .gate { display: none; }
+body.gated > :not(#gate):not(#auth):not(.confirm):not(.toast):not(script) { display: none !important; }
+.gate { min-height: 100dvh; display: grid; place-items: center; padding: 32px 20px; }
+.gate-box { width: min(460px, 100%); text-align: center; display: grid; justify-items: center; gap: 6px; }
+.gate-logo { width: 56px; height: 56px; color: var(--text); margin-bottom: 14px; }
+.gate-box h1 { margin: 0 0 4px; font-size: clamp(26px, 5vw, 34px); letter-spacing: -.02em; line-height: 1.15; }
+.gate-box > p { margin: 0 0 10px; color: var(--muted); max-width: 42ch; }
+.gate-box .btn.primary { height: 46px; padding: 0 22px; margin: 6px 0 4px; }
+.gate-box .small { font-size: 13.5px; margin-top: 10px; }
+.gate-fine { margin-top: 28px !important; font-size: 13px; }
+.gate-fine a { color: var(--muted); }
+
+/* the owner's access list */
+.acct[data-badge]:not([data-badge=""])::after { content: attr(data-badge); position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--down); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; }
+.acct-wrap .acct { position: relative; overflow: visible; }
+.acct img { border-radius: 50%; }
+.access-box { width: min(620px, 100%); max-height: calc(100dvh - 40px); overflow: auto; }
+.acc-h { display: flex; justify-content: space-between; align-items: center; }
+.acc-h h3 { margin: 0; }
+.access-box h4 { margin: 18px 0 6px; font-size: 14px; }
+.acc-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.acc-list li { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; }
+.acc-who { display: grid; min-width: 0; }
+.acc-who small { overflow-wrap: anywhere; }
+.acc-act { display: flex; gap: 6px; }
+.acc-act .btn { height: 34px; padding: 0 12px; font-size: 13.5px; }

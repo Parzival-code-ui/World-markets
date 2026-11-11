@@ -1,12 +1,32 @@
 rules_version = '2';
 // Paste into Firebase console → Firestore → Rules, then Publish.
-// Each account can only read and change its own settings document. Saving needs a confirmed email
-// (Google accounts are confirmed already), only the expected fields, and at most 60 picks.
+// World Markets is invite-only: everyone who signs in gets an access/{uid} entry marked "pending",
+// and only the owner can change it to "approved" (or "denied"). The server checks that entry before
+// it sends any data. Each account can only read and change its own settings document, and only once approved.
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isOwner() { return signedIn() && request.auth.uid == 'xy5IM7yHDjZ9gepjfWfh1xGWCV82'; }
+    function approved() {
+      return isOwner() || (exists(/databases/$(database)/documents/access/$(request.auth.uid))
+        && get(/databases/$(database)/documents/access/$(request.auth.uid)).data.status == 'approved');
+    }
+
+    match /access/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isOwner());
+      allow list: if isOwner();
+      // a new account asks for access: pending only, with its own email
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['status', 'email', 'name', 'requested'])
+        && request.resource.data.status == 'pending'
+        && request.resource.data.email == request.auth.token.get('email', '')
+        && request.resource.data.name is string && request.resource.data.name.size() <= 120;
+      allow update, delete: if isOwner();
+    }
+
     match /users/{uid} {
-      allow read, delete: if request.auth != null && request.auth.uid == uid;
-      allow create, update: if request.auth != null && request.auth.uid == uid
+      allow read, delete: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid && approved()
         && request.auth.token.email_verified == true
         && request.resource.data.keys().hasOnly(['watch', 'theme', 'cb', 'copts', 'updated'])
         && (!('watch' in request.resource.data) || (request.resource.data.watch is list && request.resource.data.watch.size() <= 60))

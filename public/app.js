@@ -15,6 +15,7 @@
     const t = await AU.token().catch(() => null);
     const r = await fetch(url, t ? { headers: { Authorization: "Bearer " + t } } : {});
     if (r.status === 429) toast("Too many requests from this device. Wait a minute and try again.");
+    if (r.status === 403 && state.access === "approved") { state.access = "denied"; applyGate(); }
     return r;
   }
   const store = { get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
@@ -128,7 +129,7 @@
     btn.classList.add("spin");
     try {
       const want = [...new Set([...symbols, ...extraSyms(), ...watch.map((w) => w.s)])].slice(0, 200);
-      const r = await fetch("/api/quotes?symbols=" + encodeURIComponent(want.join(",")));
+      const r = await authFetch("/api/quotes?symbols=" + encodeURIComponent(want.join(",")));
       if (!r.ok) throw new Error("the price service answered " + r.status);
       const j = await r.json();
       state.prev = Object.fromEntries(Object.entries(state.quotes).map(([k, v]) => [k, v && v.price]));
@@ -166,7 +167,7 @@
     if (!need.length) return;
     need.forEach((s) => extraBusy.add(s));
     try {
-      const j = await fetch("/api/quotes?symbols=" + encodeURIComponent(need.join(","))).then((r) => r.json());
+      const j = await authFetch("/api/quotes?symbols=" + encodeURIComponent(need.join(","))).then((r) => r.json());
       Object.assign(state.quotes, j.quotes || {});
     } catch (e) { /* the next minute's refresh includes them */ }
     need.forEach((s) => extraBusy.delete(s));
@@ -368,7 +369,7 @@
   // one-off quotes for symbols outside the regular refresh (watchlist adds, searched stocks)
   async function quoteFor(list) {
     try {
-      const j = await fetch("/api/quotes?symbols=" + encodeURIComponent(list.join(","))).then((r) => r.json());
+      const j = await authFetch("/api/quotes?symbols=" + encodeURIComponent(list.join(","))).then((r) => r.json());
       Object.assign(state.quotes, j.quotes || {});
     } catch (e) { /* the next refresh will try again */ }
   }
@@ -779,7 +780,7 @@
     retBusy = true;
     const chunks = [];
     for (let i = 0; i < need.length; i += 80) chunks.push(need.slice(i, i + 80));
-    Promise.all(chunks.map((c) => fetch("/api/returns?symbols=" + encodeURIComponent(c.join(","))).then((r) => (r.ok ? r.json() : null)).catch(() => null)))
+    Promise.all(chunks.map((c) => authFetch("/api/returns?symbols=" + encodeURIComponent(c.join(","))).then((r) => (r.ok ? r.json() : null)).catch(() => null)))
       .then((res) => {
         res.forEach((j) => j && Object.entries(j.returns || {}).forEach(([k, v]) => { RET.r[k] = v; RET.t[k] = j.mock ? now - RET_TTL + 60e3 : now; }));
         store.set("wm-ret", RET);
@@ -1734,6 +1735,7 @@
   document.addEventListener("click", (e) => { if (e.target.closest("[data-joinx]")) { store.set("wm-join-x", 1); renderWatch(); } });
   const WHY = {
     join: () => "Keep your own list of markets and track what you've bought.",
+    gate: () => "World Markets is invite-only. Sign in and the owner will be asked to let you in.",
     mine: () => "Sign in to keep your own list of markets and track what you've bought.",
     chart: (n) => `Sign in to open the chart${n ? " for " + n : ""}.`,
     view: () => "Sign in to see this part of World Markets.",
@@ -1888,11 +1890,12 @@
   }
   function toggleAcct(on) {
     amenu.hidden = !on; acct.setAttribute("aria-expanded", on);
-    if (on) amenu.querySelector("button").focus();
+    if (on) { amenu.querySelector("button:not([hidden])").focus(); if (AU.user && AU.user.admin) refreshRequests(); }
   }
   acct.onclick = (e) => { e.stopPropagation(); if (!AU.known) return; if (!AU.user) return openAuth("view"); toggleAcct(amenu.hidden); };
   document.addEventListener("click", (e) => { if (!amenu.hidden && !e.target.closest("#acct-menu")) toggleAcct(false); });
   amenu.addEventListener("keydown", (e) => { if (e.key === "Escape") { toggleAcct(false); acct.focus(); } });
+  $("#am-access").onclick = () => { toggleAcct(false); openRequests(); };
   $("#am-out").onclick = async () => { toggleAcct(false); await AU.signOut(); toast("You're signed out"); };
   $("#am-delete").onclick = async () => {
     toggleAcct(false);
@@ -1957,17 +1960,114 @@
       const go = pendingChart;
       closeAuth(true); pendingChart = null;
       if (!first) toast(`Signed in as ${u.name}`);
-      pullSettings();
+      state.access = "unknown"; applyGate(); checkAccess();
       if (go) { modal.range = go.range || modal.range; modal.cmp = go.cmp; openChart(go.s, false, !!go.cmp); }
       else if (first) applyHash(true);
     } else {
-      if (!first) { watch.splice(0); store.set("wm-watch", []); } // signing out clears this device
+      if (accessOff) { accessOff(); accessOff = null; }
+      state.access = "none"; applyGate();
+      acct.dataset.badge = "";
+      // signing out clears this device: picks and the last prices it saw
+      if (!first) { watch.splice(0); store.set("wm-watch", []); ["wm-quotes", "wm-fund", "wm-ret"].forEach((k) => { try { localStorage.removeItem(k); } catch (e) {} }); }
       if (modal.sym) closeChart();
       render();
       if (first) applyHash(true);
     }
   }
   renderAcct();
+
+  // ── private site: only accounts the owner has approved see any data ──────
+  state.access = "unknown";
+  let accessOff = null, started = false;
+  const approved = () => state.access === "approved";
+  function start() { if (started) return; started = true; load(); setInterval(load, REFRESH_MS); }
+  function gateHTML() {
+    const u = AU.user, st = state.access;
+    const logo = `<svg class="gate-logo" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-width="2"/><path d="M2 16h28M16 2c-5 4-6 22 0 28M16 2c5 4 6 22 0 28" fill="none" stroke="currentColor" stroke-width="1.5" opacity=".55"/><circle cx="23" cy="9" r="3.2" fill="var(--sun)"/></svg>`;
+    const out = u ? `<p class="muted small">Signed in as ${esc(u.email || u.name)}. <button class="linkbtn" data-gate-out>Sign out</button></p>` : "";
+    let body;
+    if (!AU.known || (u && st === "unknown")) body = `<h1>World Markets</h1><p class="muted">Checking your access…</p>`;
+    else if (AU.unavailable) body = `<h1>World Markets</h1><p>${esc(AU.unavailable)}</p>`;
+    else if (!u) body = `<h1>World Markets is invite-only</h1><p>Sign in with Google or email to ask for access. The owner approves each account by hand.</p>
+      <button class="btn primary" data-signin="gate">Sign in to request access</button>`;
+    else if (st === "pending") body = `<h1>Thanks, ${esc((u.name || "").split(" ")[0] || "there")}</h1><p>Your request is with the owner. As soon as it's approved this page opens by itself, so you can leave it open or come back later.</p>${out}`;
+    else if (st === "denied") body = `<h1>Access not approved</h1><p>The owner hasn't given this account access to World Markets.</p>${out}`;
+    else body = `<h1>Couldn't check your access</h1><p>Check your connection and try again.</p><button class="btn primary" data-gate-retry>Try again</button>${out}`;
+    return `<div class="gate-box">${logo}${body}<p class="gate-fine"><a href="/about">About</a> · <a href="/privacy">Privacy</a></p></div>`;
+  }
+  function applyGate() {
+    const g = $("#gate"), open = approved();
+    document.body.classList.toggle("gated", !open);
+    g.hidden = open;
+    if (open) { g.innerHTML = ""; start(); return; }
+    g.innerHTML = gateHTML();
+  }
+  async function checkAccess() {
+    try { state.access = await AU.access(); }
+    catch (e) { console.warn("access check failed", e); state.access = "error"; }
+    applyGate();
+    if (accessOff) accessOff();
+    accessOff = AU.onAccess((st) => {
+      const was = state.access;
+      state.access = st; applyGate();
+      if (st === "approved" && was !== "approved") { toast("You're in. Welcome to World Markets."); pullSettings(); }
+    });
+    if (approved()) pullSettings();
+    if (AU.user && AU.user.admin) refreshRequests();
+  }
+  document.addEventListener("click", async (e) => {
+    if (e.target.closest("[data-gate-out]")) { await AU.signOut(); }
+    if (e.target.closest("[data-gate-retry]")) { state.access = "unknown"; applyGate(); checkAccess(); }
+  });
+
+  // the owner's list of access requests
+  let requests = [];
+  async function refreshRequests() {
+    try { requests = await AU.listAccess(); } catch (e) { console.warn("couldn't list requests", e); requests = []; }
+    const n = requests.filter((r) => r.status === "pending").length;
+    acct.dataset.badge = n ? String(n) : "";
+    const item = $("#am-access");
+    if (item) { item.hidden = false; item.textContent = n ? `Access requests (${n})` : "Access requests"; }
+    const open = document.querySelector(".access-box");
+    if (open) drawRequests(open);
+  }
+  function drawRequests(box) {
+    const when = (t) => (t ? new Date(t).toLocaleString([], { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : "");
+    const group = (st, title, actions) => {
+      const list = requests.filter((r) => r.status === st).sort((a, b) => (b.requested || 0) - (a.requested || 0));
+      if (!list.length) return "";
+      return `<h4>${title} <span class="muted">${list.length}</span></h4><ul class="acc-list">${list.map((r) => `<li><span class="acc-who"><b>${esc(r.name || r.email || "No name")}</b><small class="muted">${esc(r.email || "")}${r.requested ? ", asked " + when(r.requested) : ""}</small></span>
+        <span class="acc-act">${actions.map(([st2, label, kind]) => `<button class="btn ${kind || ""}" data-acc="${esc(r.uid)}" data-acc-st="${st2}">${label}</button>`).join("")}</span></li>`).join("")}</ul>`;
+    };
+    const html = group("pending", "Waiting for you", [["denied", "Decline"], ["approved", "Approve", "primary"]])
+      + group("approved", "Have access", [["denied", "Remove access"]])
+      + group("denied", "Declined", [["", "Forget"], ["approved", "Approve"]]);
+    box.querySelector(".acc-body").innerHTML = html || `<p class="muted">No requests yet. When someone signs in, they'll appear here.</p>`;
+  }
+  function openRequests() {
+    const d = document.createElement("div");
+    d.className = "confirm"; d.setAttribute("role", "dialog"); d.setAttribute("aria-modal", "true"); d.setAttribute("aria-labelledby", "acc-t");
+    d.innerHTML = `<div class="cbox access-box"><div class="acc-h"><h3 id="acc-t">Access requests</h3><button class="iconbtn" data-acc-close aria-label="Close"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>
+      <p class="muted">Only accounts you approve can see World Markets. Removing someone takes effect within a few minutes.</p><div class="acc-body"><p class="muted">Loading…</p></div></div>`;
+    document.body.appendChild(d);
+    const esc2 = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+    const close = () => { d.remove(); document.removeEventListener("keydown", esc2, true); acct.focus(); };
+    document.addEventListener("keydown", esc2, true);
+    d.addEventListener("click", async (e) => {
+      if (e.target === d || e.target.closest("[data-acc-close]")) return close();
+      const b = e.target.closest("[data-acc]");
+      if (!b) return;
+      b.disabled = true;
+      try {
+        await AU.setAccess(b.dataset.acc, b.dataset.accSt || null);
+        const r = requests.find((x) => x.uid === b.dataset.acc);
+        toast(b.dataset.accSt === "approved" ? `Approved ${r ? r.name || r.email : ""}` : b.dataset.accSt === "denied" ? "Access removed" : "Forgotten");
+      } catch (x) { toast("Couldn't save that. Check the database rules are published."); }
+      refreshRequests();
+    });
+    d.querySelector("[data-acc-close]").focus();
+    refreshRequests();
+  }
 
   // load a chart while the pointer rests on its row, so the click opens instantly
   if (window.matchMedia("(hover: hover)").matches) {
@@ -2039,7 +2139,6 @@
   AU.onChange(onAuth);
   requestAnimationFrame(moveInk);
   if (document.fonts) document.fonts.ready.then(moveInk);
-  load();
-  setInterval(load, REFRESH_MS);
+  applyGate(); // the data starts loading once this account is approved (start())
   setInterval(() => { renderHero(); patchStatus(); if (state.view === "map") renderTimeline($("#timeline")); }, 30_000);
 })();

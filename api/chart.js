@@ -69,10 +69,10 @@ function mock(symbol, range) {
     high52: Math.max(...cl) * 1.05, low52: Math.min(...cl) * 0.95, ...f, mock: true };
 }
 
-// open to everyone, with a per-visitor rate limit (see _auth.js)
-const { limited } = require("./_auth");
+// approved accounts only, with a per-visitor rate limit (see _auth.js)
+const { limited, requireUser } = require("./_auth");
 
-module.exports = limited(async function handler(req, res) {
+module.exports = requireUser(limited(async function handler(req, res) {
   const qs = req.query && req.query.symbol != null ? req.query : Object.fromEntries(new URL(req.url, "http://x").searchParams);
   const symbol = String(qs.symbol || "").trim();
   const range = RANGES[qs.range] ? qs.range : "1mo";
@@ -119,4 +119,4 @@ module.exports = limited(async function handler(req, res) {
   } catch (e) {
     send(res, 502, { error: String(e.message || e) });
   }
-}, 90);
+}, 90), 60);

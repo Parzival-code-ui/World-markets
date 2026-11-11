@@ -8,3 +8,5 @@ window.FIREBASE_CONFIG = {
   messagingSenderId: "687065218752",
   appId: "1:687065218752:web:ef860de7aee547c0163725",
 };
+// The site owner's account: always allowed in, and the only one that can approve new accounts.
+window.WM_ADMIN = "xy5IM7yHDjZ9gepjfWfh1xGWCV82";
