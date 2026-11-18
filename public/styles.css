@@ -887,6 +887,7 @@ body.gated > :not(#gate):not(#auth):not(.confirm):not(.toast):not(script) { disp
   --active--color: var(--sun); --active--background: color-mix(in srgb, var(--sun) 25%, transparent);
   --inactive--color: var(--muted); --inactive--border-color: var(--line-2); --icon--color: var(--text);
   --rt-pos-cell--color: var(--text); --rt-neg-cell--color: var(--text);
-  --interface-monospace--font-family: "Schibsted Grotesk", system-ui, sans-serif;
-  font-family: "Schibsted Grotesk", system-ui, sans-serif; font-variant-numeric: tabular-nums;
+  /* the flags-only font first, so Windows shows flags rather than letters */
+  --interface-monospace--font-family: "Twemoji Country Flags", "Schibsted Grotesk", system-ui, sans-serif;
+  font-family: "Twemoji Country Flags", "Schibsted Grotesk", system-ui, sans-serif; font-variant-numeric: tabular-nums;
 }
