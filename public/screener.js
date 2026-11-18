@@ -1,10 +1,13 @@
 // Stock screener built on Perspective (FINOS, open-sourced by J.P. Morgan): one table of every company
 // in the Stocks tab that people can filter, sort, group and chart themselves. Loaded only when the
 // screener is opened, from jsDelivr at a pinned version. Exposes window.WMScreener for app.js.
+//
+// Every instruction to the viewer goes through one queue, so a click on a view while the screener is
+// still starting (or a tab switch mid-load) can never send it two things at once.
 (() => {
   const V = "3.8.0";
   const CDN = (pkg, file) => `https://cdn.jsdelivr.net/npm/@finos/${pkg}@${V}/dist/${file}`;
-  let ready = null, worker = null, table = null, viewer = null, lastPreset = null;
+  let ready = null, worker = null, table = null, viewer = null, shown = null, wanted = "all";
 
   // the columns, in the order people see them
   const SCHEMA = {
@@ -29,13 +32,18 @@
 
   // ready-made views; people can change anything from there
   const PRESETS = {
-    all: { label: "Largest companies", group_by: [], split_by: [], filter: [], sort: [["Market cap ($bn)", "desc"]], plugin: "Datagrid" },
-    value: { label: "Cheapest by P/E", group_by: [], split_by: [], filter: [["P/E", ">", 0]], sort: [["P/E", "asc"]], plugin: "Datagrid" },
-    dividend: { label: "Highest dividends", group_by: [], split_by: [], filter: [["Dividend %", ">", 0]], sort: [["Dividend %", "desc"]], plugin: "Datagrid" },
-    sector: { label: "By sector", group_by: ["Sector"], split_by: [], filter: [], sort: [["Market cap ($bn)", "desc"]], plugin: "Datagrid", columns: GROUPED },
-    market: { label: "By market", group_by: ["Market"], split_by: [], filter: [], sort: [["Market cap ($bn)", "desc"]], plugin: "Datagrid", columns: GROUPED },
-    movers: { label: "Today's movers (chart)", group_by: ["Company"], split_by: [], filter: [], sort: [["Today %", "desc"]], plugin: "Y Bar", columns: ["Today %"] },
+    all: { group_by: [], filter: [], sort: [["Market cap ($bn)", "desc"]], plugin: "Datagrid" },
+    value: { group_by: [], filter: [["P/E", ">", 0]], sort: [["P/E", "asc"]], plugin: "Datagrid" },
+    dividend: { group_by: [], filter: [["Dividend %", ">", 0]], sort: [["Dividend %", "desc"]], plugin: "Datagrid" },
+    sector: { group_by: ["Sector"], filter: [], sort: [["Market cap ($bn)", "desc"]], plugin: "Datagrid", columns: GROUPED },
+    market: { group_by: ["Market"], filter: [], sort: [["Market cap ($bn)", "desc"]], plugin: "Datagrid", columns: GROUPED },
+    movers: { group_by: ["Company"], filter: [], sort: [["Today %", "desc"]], plugin: "Y Bar", columns: ["Today %"] },
   };
+  const themeName = () => (document.documentElement.dataset.theme === "day" ? "Pro Light" : "Pro Dark");
+
+  // one instruction at a time; a failed step doesn't block the next
+  let queue = Promise.resolve();
+  const enqueue = (fn) => { const p = queue.then(fn); queue = p.catch(() => {}); return p; };
 
   function loadCSS(href) {
     if (document.querySelector(`link[href="${href}"]`)) return;
@@ -58,41 +66,54 @@
     ready.catch(() => { ready = null; });
     return ready;
   }
-  const themeName = () => (document.documentElement.dataset.theme === "day" ? "Pro Light" : "Pro Dark");
+  function config(name) {
+    const p = PRESETS[name] || PRESETS.all;
+    return {
+      plugin: p.plugin, columns: p.columns || SHOW, group_by: p.group_by, split_by: [], filter: p.filter, sort: p.sort,
+      expressions: {}, aggregates: AGG, settings: false, theme: themeName(), title: null, columns_config: COLS(),
+    };
+  }
+  // throw away a viewer that failed to start, so the next attempt begins clean
+  function discard() {
+    if (viewer) { try { viewer.delete && viewer.delete(); } catch (e) {} viewer.remove(); }
+    viewer = null; shown = null;
+  }
 
   window.WMScreener = {
     PRESETS,
     onPick: null,
-    loaded: () => !!table,
-    // put the screener in `host`, showing `rows`; resolves once it's on screen
-    async mount(host, rows, preset = "all") {
-      await load();
-      // the viewer builds its toolbar when it joins the page, so attach it before loading data into it
-      const first = !viewer;
-      if (first) {
-        viewer = document.createElement("perspective-viewer"); viewer.className = "psp";
-        // a click on a company's row opens its chart; the row carries only the visible columns, so app.js finds it by name
-        viewer.addEventListener("perspective-click", (e) => { const r = e.detail && e.detail.row; if (r && this.onPick && (r.Symbol || typeof r.Company === "string")) this.onPick(r); });
-      }
-      host.replaceChildren(viewer);
-      if (first) await viewer.load(table);
-      if (rows && rows.length) await table.update(rows);
-      if (preset !== lastPreset) await this.preset(preset);
-      else await viewer.restore({ theme: themeName() });
-      viewer.notifyResize && viewer.notifyResize();
-    },
-    async update(rows) { if (table && rows.length) await table.update(rows); },
-    async preset(name) {
-      const p = PRESETS[name] || PRESETS.all;
-      lastPreset = name;
-      if (!viewer) return;
-      await viewer.restore({
-        plugin: p.plugin, columns: p.columns || SHOW, group_by: p.group_by, split_by: p.split_by, filter: p.filter, sort: p.sort,
-        expressions: {}, aggregates: AGG, settings: false, theme: themeName(), title: null,
-        columns_config: COLS(),
+    loaded: () => !!(table && viewer && shown),
+    // put the screener in `host`, showing `rows`; resolves true once it's on screen, false if the visitor left
+    mount(host, rows, preset) {
+      if (preset) wanted = preset;
+      return enqueue(async () => {
+        await load();
+        if (!host.isConnected) return false; // the visitor moved to another tab meanwhile; try again when they're back
+        if (rows && rows.length) await table.update(rows);
+        if (!viewer) {
+          viewer = document.createElement("perspective-viewer");
+          viewer.className = "psp";
+          // a click on a company's row opens its chart; the row carries only the visible columns, so app.js finds it by name
+          viewer.addEventListener("perspective-click", (e) => { const r = e.detail && e.detail.row; if (r && this.onPick && (r.Symbol || typeof r.Company === "string")) this.onPick(r); });
+          // the viewer builds its toolbar when it joins the page, so attach it before loading data into it
+          host.replaceChildren(viewer);
+          try { await viewer.load(table); }
+          catch (e) { discard(); throw e; }
+        } else host.replaceChildren(viewer);
+        if (!host.isConnected) return false;
+        try { await viewer.restore(config(wanted)); shown = wanted; }
+        catch (e) { discard(); throw e; }
+        viewer.notifyResize && viewer.notifyResize();
+        return true;
       });
     },
-    retheme() { if (viewer) viewer.restore({ theme: themeName(), columns_config: COLS() }); },
+    update(rows) { return enqueue(async () => { if (table && rows && rows.length) await table.update(rows); }); },
+    // a view picked before the screener is ready is remembered and applied when it is
+    preset(name) {
+      wanted = name;
+      return enqueue(async () => { if (viewer && shown && viewer.isConnected) { await viewer.restore(config(name)); shown = name; } });
+    },
+    retheme() { return enqueue(async () => { if (viewer && shown && viewer.isConnected) await viewer.restore({ theme: themeName(), columns_config: COLS() }); }); },
     resize() { if (viewer && viewer.notifyResize) viewer.notifyResize(); },
   };
 })();

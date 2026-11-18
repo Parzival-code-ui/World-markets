@@ -660,12 +660,26 @@
     const h = el.querySelector("#psp-host");
     if (pspBusy || !approved()) return; // the grid measures itself, so it waits until the page is visible
     pspBusy = true;
-    loadScreenerScript()
+    const attempt = (n) => loadScreenerScript()
       .then(() => { WMScreener.onPick = (r) => { const hit = r.Symbol ? { s: r.Symbol } : allStocks().find((x) => x.n === r.Company); if (hit) openChart(hit.s); }; return WMScreener.mount(h, screenerRows(), state.pspPreset); })
-      .then(() => { h.dataset.on = "1"; return WMScreener.update(screenerRows()); }) // numbers that arrived while it was starting
+      .then((shown) => {
+        if (!shown) return; // the visitor went to another tab; it starts again when they come back
+        h.dataset.on = "1";
+        return WMScreener.update(screenerRows()); // numbers that arrived while it was starting
+      })
+      .catch((e) => {
+        if (n < 2 && h.isConnected) return new Promise((r) => setTimeout(r, 1200)).then(() => attempt(n + 1)); // one quiet retry
+        throw e;
+      });
+    attempt(1)
       .catch((e) => {
         console.warn("screener failed", e);
-        h.innerHTML = `<div class="empty"><p>The screener couldn't load on this device. Check your connection, or use the simple list.</p><button class="btn" data-smode="list">Show the simple list</button></div>`;
+        // send the real reason to the error log (Vercel → Logs → "client-error")
+        try { navigator.sendBeacon("/api/log", new Blob([JSON.stringify({ msg: "screener failed: " + (e && e.message || e), stack: e && e.stack || "", page: "/#stocks", ver: "screener" })], { type: "application/json" })); } catch (x) {}
+        if (h.isConnected) h.innerHTML = `<div class="empty"><p>The screener couldn't load on this device. Check your connection and try again, or use the simple list.</p><button class="btn primary" data-psp-retry>Try again</button> <button class="btn" data-smode="list">Show the simple list</button></div>`;
+        bindStocksMode(el);
+        const rb = h.querySelector("[data-psp-retry]");
+        if (rb) rb.onclick = () => { delete h.dataset.on; renderScreener(el); };
       })
       .finally(() => { pspBusy = false; });
   }
