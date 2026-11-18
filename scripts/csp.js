@@ -15,13 +15,14 @@ for (const f of pages) {
 const FIREBASE_AUTH_DOMAIN = "https://world-markets-27f52.firebaseapp.com";
 const csp = [
   "default-src 'self'",
-  `script-src 'self' ${[...hashes].sort().join(" ")} https://cdn.jsdelivr.net https://www.gstatic.com https://apis.google.com`,
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  // 'wasm-unsafe-eval' lets the stock screener (Perspective) run its WebAssembly engine; it doesn't allow eval()
+  `script-src 'self' 'wasm-unsafe-eval' ${[...hashes].sort().join(" ")} https://cdn.jsdelivr.net https://www.gstatic.com https://apis.google.com`,
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net",
   "font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net",
   "img-src 'self' data: https://*.googleusercontent.com",
   "connect-src 'self' https://cdn.jsdelivr.net https://*.googleapis.com https://apis.google.com https://www.gstatic.com",
   `frame-src ${FIREBASE_AUTH_DOMAIN} https://accounts.google.com https://apis.google.com`,
-  "worker-src 'self'",
+  "worker-src 'self' blob: https://cdn.jsdelivr.net", // the screener's engine runs in a worker it builds itself
   "manifest-src 'self'",
   "object-src 'none'",
   "base-uri 'self'",

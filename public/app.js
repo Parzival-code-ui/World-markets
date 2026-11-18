@@ -12,6 +12,8 @@
   const unverified = () => !!AU.user && AU.user.verified === false;
   const LOCKED = ["mine"]; // market data is open to everyone; the account holds what is personal
   async function authFetch(url) {
+    // nothing is asked of the server until this account is let in (the gate is showing anyway)
+    if (state.access && state.access !== "approved") throw new Error("waiting for approval");
     const t = await AU.token().catch(() => null);
     const r = await fetch(url, t ? { headers: { Authorization: "Bearer " + t } } : {});
     if (r.status === 429) toast("Too many requests from this device. Wait a minute and try again.");
@@ -160,9 +162,14 @@
 
   // stocks outside the always-loaded set: fetched only while their market is open in the Stocks tab
   const stockList = () => (SM.find((m) => m.id === state.stockMkt) || SM[0]).stocks;
-  const extraSyms = () => (state.view === "stocks" ? stockList().map((x) => x[0]) : state.view === "india" ? (IN.adrs || []).flatMap(([a, n]) => [a, n]) : []).filter((s) => !symbols.has(s));
+  const allStocks = () => SM.flatMap((m) => m.stocks.map(([s, n, sec]) => ({ s, n, sec, m })));
+  // Stocks tab: the Perspective screener by default on bigger screens, the simple list on phones
+  state.stocksMode = ["screener", "list"].includes(store.get("wm-stocks-mode")) ? store.get("wm-stocks-mode") : innerWidth > 640 ? "screener" : "list";
+  state.pspPreset = "all";
+  const extraSyms = () => (state.view === "stocks" ? (state.stocksMode === "screener" ? allStocks().map((x) => x.s) : stockList().map((x) => x[0])) : state.view === "india" ? (IN.adrs || []).flatMap(([a, n]) => [a, n]) : []).filter((s) => !symbols.has(s));
   const extraBusy = new Set();
   async function loadExtra() {
+    if (!approved()) return;
     const need = extraSyms().filter((s) => !state.quotes[s] && !extraBusy.has(s));
     if (!need.length) return;
     need.forEach((s) => extraBusy.add(s));
@@ -178,6 +185,7 @@
   const fundBusy = new Set();
   let fundErr = null;
   function ensureFund(list) {
+    if (!approved()) return;
     const all = list.filter((s) => !fundBusy.has(s) && !(state.fundT[s] && Date.now() - state.fundT[s] < 3600e3));
     for (let i = 0; i < all.length; i += 50) fundBatch(all.slice(i, i + 50)); // the service takes up to 60 at a time
   }
@@ -615,16 +623,80 @@
     const m = SM.find((x) => x.stocks.some(([s, n]) => n.toLowerCase().includes(q) || tickerOf(s).toLowerCase() === q));
     return m ? m.id : null;
   }
+  // one row per company for the screener, in the units people expect (market cap in US dollars, % as %)
+  function screenerRows() {
+    return allStocks().map(({ s, n, sec, m }) => {
+      const q = Qv(s), f = state.fund[s] || {}, r = RET.r[s] || {};
+      const num = (v) => (v == null || !isFinite(v) ? null : v);
+      const mcUsd = f.marketCap ? usdOf(f.marketCap, f.currency) : null;
+      return {
+        Symbol: s, Company: n, Ticker: tickerOf(s), Market: `${m.flag} ${m.name}`, Sector: sec, Currency: curOf(s) || f.currency || "",
+        Price: num(q.price), "Today %": num(q.changePct), "1 month %": num(q.change1mPct), "1 year %": r.y1 != null ? r.y1 * 100 : null,
+        "Market cap ($bn)": mcUsd != null ? mcUsd / 1e9 : null, "P/E": f.pe > 0 ? f.pe : null, "P/B": f.pb > 0 ? f.pb : null,
+        "Dividend %": num(f.divYield), "Next results": f.results ? new Date(f.results * 1000) : null,
+      };
+    });
+  }
+  let pspBusy = false;
+  function renderScreener(el) {
+    const all = allStocks().map((x) => x.s);
+    ensureFund(all); loadExtra(); ensureReturns(all);
+    const host = el.querySelector("#psp-host");
+    // already showing, or still starting up: never rebuild the page under it, just pass new numbers
+    if (host && (host.dataset.on === "1" || pspBusy)) { if (window.WMScreener && WMScreener.loaded() && host.dataset.on === "1") WMScreener.update(screenerRows()); return; }
+    el.innerHTML = `${stocksModeHTML()}
+      <section class="panel psp-panel"><div class="panel-h"><div><h2>Stock screener</h2><p class="muted">${allStocks().length} of the largest companies in ${SM.length} markets. Start from a view below, then sort, filter or group by any column. Click a company for its chart. For your own columns, filters or a chart, open the settings button at the top left of the table.</p></div></div>
+        <div class="chips psp-presets" role="group" aria-label="Start from">${Object.entries(WMSCREENER_PRESETS()).map(([k, l]) => `<button class="chip ${k === state.pspPreset ? "on" : ""}" data-psp="${k}" aria-pressed="${k === state.pspPreset}">${esc(l)}</button>`).join("")}</div>
+        <div id="psp-host" class="psp-host"><p class="muted psp-wait">Loading the screener…</p></div>
+        <p class="src">Prices and company figures from Yahoo Finance; market caps converted to US dollars at today's rates. Built with <a href="https://perspective.finos.org" target="_blank" rel="noopener">Perspective</a>, the open-source data grid from FINOS (originally J.P. Morgan).</p></section>`;
+    bindStocksMode(el);
+    el.querySelector(".psp-presets").onclick = (e) => {
+      const b = e.target.closest("[data-psp]");
+      if (!b) return;
+      state.pspPreset = b.dataset.psp;
+      el.querySelectorAll("[data-psp]").forEach((x) => { x.classList.toggle("on", x === b); x.setAttribute("aria-pressed", x === b); });
+      window.WMScreener && WMScreener.preset(state.pspPreset);
+    };
+    const h = el.querySelector("#psp-host");
+    if (pspBusy || !approved()) return; // the grid measures itself, so it waits until the page is visible
+    pspBusy = true;
+    loadScreenerScript()
+      .then(() => { WMScreener.onPick = (r) => { const hit = r.Symbol ? { s: r.Symbol } : allStocks().find((x) => x.n === r.Company); if (hit) openChart(hit.s); }; return WMScreener.mount(h, screenerRows(), state.pspPreset); })
+      .then(() => { h.dataset.on = "1"; return WMScreener.update(screenerRows()); }) // numbers that arrived while it was starting
+      .catch((e) => {
+        console.warn("screener failed", e);
+        h.innerHTML = `<div class="empty"><p>The screener couldn't load on this device. Check your connection, or use the simple list.</p><button class="btn" data-smode="list">Show the simple list</button></div>`;
+      })
+      .finally(() => { pspBusy = false; });
+  }
+  const WMSCREENER_PRESETS = () => ({ all: "Largest companies", value: "Cheapest by P/E", dividend: "Highest dividends", sector: "By sector", market: "By market", movers: "Today's movers (chart)" });
+  let screenerScript = null;
+  function loadScreenerScript() {
+    if (window.WMScreener) return Promise.resolve();
+    if (screenerScript) return screenerScript;
+    screenerScript = new Promise((ok, no) => { const sc = document.createElement("script"); sc.src = "/screener.js"; sc.onload = ok; sc.onerror = () => { screenerScript = null; no(new Error("screener.js")); }; document.head.appendChild(sc); });
+    return screenerScript;
+  }
+  const stocksModeHTML = () => `<div class="stocks-mode"><div class="seg" role="radiogroup" aria-label="Show stocks as">${[["screener", "Screener"], ["list", "Simple list"]].map(([k, l]) => `<button role="radio" aria-checked="${state.stocksMode === k}" class="${state.stocksMode === k ? "on" : ""}" data-smode="${k}">${l}</button>`).join("")}</div></div>`;
+  function bindStocksMode(el) {
+    el.querySelectorAll("[data-smode]").forEach((b) => b.onclick = () => {
+      if (b.dataset.smode === state.stocksMode && !b.closest(".psp-host")) return;
+      state.stocksMode = b.dataset.smode; store.set("wm-stocks-mode", state.stocksMode);
+      el.innerHTML = ""; renderStocks(el);
+    });
+  }
   function renderStocks(el) {
+    if (state.stocksMode === "screener") return renderScreener(el);
     const m = SM.find((x) => x.id === state.stockMkt) || SM[0];
     const q = state.q.toLowerCase();
     const list = m.stocks.filter(([s, n, sec]) => !q || n.toLowerCase().includes(q) || s.toLowerCase().includes(q) || sec.toLowerCase().includes(q));
     if (q && !list.length && findStockMkt(q) && findStockMkt(q) !== m.id) { state.stockMkt = findStockMkt(q); return renderStocks(el); }
     ensureFund(m.stocks.map((x) => x[0]));
     loadExtra();
-    el.innerHTML = `<div class="chips mkts" id="mkts" role="group" aria-label="Market">${SM.map((x) => `<button class="chip ${x.id === m.id ? "on" : ""}" data-mk="${x.id}" aria-pressed="${x.id === m.id}">${x.flag} ${esc(x.name)}</button>`).join("")}</div>
+    el.innerHTML = `${stocksModeHTML()}<div class="chips mkts" id="mkts" role="group" aria-label="Market">${SM.map((x) => `<button class="chip ${x.id === m.id ? "on" : ""}" data-mk="${x.id}" aria-pressed="${x.id === m.id}">${x.flag} ${esc(x.name)}</button>`).join("")}</div>
       <section class="panel"><div class="panel-h"><div><h2>Largest companies in ${esc(m.name)}</h2><p class="muted">Click a company for its chart, valuation, profitability and balance sheet. Click a column to sort.</p></div></div>
       ${list.length ? stockTable(list, state.stocksSort, "data-sk2") : `<div class="empty"><p>No companies in ${esc(m.name)} match “${esc(state.q)}”.</p></div>`}${fundNote()}</section>`;
+    bindStocksMode(el);
     el.querySelector("#mkts").onclick = (e) => {
       const b = e.target.closest("[data-mk]");
       if (!b || b.dataset.mk === state.stockMkt) return;
@@ -774,6 +846,7 @@
   const RET = (() => { const c = store.get("wm-ret"); return c && c.v === 1 ? c : { v: 1, t: {}, r: {} }; })();
   let retBusy = false;
   function ensureReturns(list) {
+    if (!approved()) return;
     const now = Date.now();
     const need = [...new Set(list)].filter((s) => s && !(RET.t[s] > now - RET_TTL));
     if (!need.length || retBusy) return;
@@ -785,7 +858,7 @@
         res.forEach((j) => j && Object.entries(j.returns || {}).forEach(([k, v]) => { RET.r[k] = v; RET.t[k] = j.mock ? now - RET_TTL + 60e3 : now; }));
         store.set("wm-ret", RET);
       })
-      .finally(() => { retBusy = false; if (["table", "india", "mine"].includes(state.view)) renderMain(); });
+      .finally(() => { retBusy = false; if (["table", "india", "mine", "stocks"].includes(state.view)) renderMain(); });
   }
   // the change of symbol s over period p ("d" = today), in local currency or seen from INR or USD
   const RCUR = { local: "Local currency", INR: "Rupees", USD: "Dollars" };
@@ -843,6 +916,7 @@
     });
     document.querySelectorAll("[data-sp]").forEach((el) => { el.innerHTML = spark(Qv(el.dataset.sp).spark, +el.dataset.w, +el.dataset.h); });
     patchHoldings();
+    if (state.view === "stocks" && state.stocksMode === "screener" && window.WMScreener && WMScreener.loaded()) WMScreener.update(screenerRows());
     if (state.view === "table" && state.retCur !== "local" && !document.activeElement.closest("#main")) { const x = $(".tscroll") && $(".tscroll").scrollLeft; renderMain(); if (x && $(".tscroll")) $(".tscroll").scrollLeft = x; }
     document.querySelectorAll("[data-tile]").forEach((el) => {
       const q = Qv(el.dataset.tile);
@@ -1221,6 +1295,7 @@
     if (store.get("wm-cb")) document.documentElement.dataset.cb = "1"; else delete document.documentElement.dataset.cb;
     const meta = document.querySelector('meta[name="theme-color"]');
     readPalette();
+    if (window.WMScreener) WMScreener.retheme(); // after the new colours are in place
     if (meta) meta.content = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
     const pop = $("#theme-pop");
     if (pop) {

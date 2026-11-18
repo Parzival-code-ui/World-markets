@@ -1,8 +1,8 @@
 // Offline support. Pages and files are fetched from the network first, so a new deploy shows up straight
 // away; the cached copy is used only when the network fails. Live data (/api) is never cached here:
 // the page keeps its own last prices and shows how old they are.
-const CACHE = "wm-v1";
-const SHELL = ["/", "/styles.css", "/app.js", "/auth.js", "/lib/core.js", "/data/markets.js", "/data/india.js", "/data/stocks.js", "/data/macro.js", "/data/holidays.js", "/data/calendar.js", "/data/firebase.js", "/icon.svg", "/manifest.webmanifest"];
+const CACHE = "wm-v2";
+const SHELL = ["/", "/styles.css", "/app.js", "/auth.js", "/lib/core.js", "/screener.js", "/data/markets.js", "/data/india.js", "/data/stocks.js", "/data/macro.js", "/data/holidays.js", "/data/calendar.js", "/data/firebase.js", "/icon.svg", "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
